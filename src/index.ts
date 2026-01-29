@@ -108,29 +108,56 @@ async function loadFontBytes(env: any, path: string): Promise<Uint8Array> {
  * ========================= */
 function isHiraganaKatakana(ch: string) {
   const cp = ch.codePointAt(0) || 0;
-  return (cp >= 0x3040 && cp <= 0x30ff) || (cp >= 0x31f0 && cp <= 0x31ff);
+  return (
+    (cp >= 0x3040 && cp <= 0x30ff) || // Hiragana + Katakana
+    (cp >= 0x31f0 && cp <= 0x31ff) || // Katakana Phonetic Extensions
+    (cp >= 0xff66 && cp <= 0xff9d) // Halfwidth Katakana
+  );
 }
 function isHangul(ch: string) {
   const cp = ch.codePointAt(0) || 0;
-  return (cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0x1100 && cp <= 0x11ff);
+  return (
+    (cp >= 0xac00 && cp <= 0xd7af) || // Hangul Syllables
+    (cp >= 0x1100 && cp <= 0x11ff) || // Hangul Jamo
+    (cp >= 0x3130 && cp <= 0x318f) || // Hangul Compatibility Jamo
+    (cp >= 0xa960 && cp <= 0xa97f) || // Hangul Jamo Extended-A
+    (cp >= 0xd7b0 && cp <= 0xd7ff) // Hangul Jamo Extended-B
+  );
 }
 function isCJKUnified(ch: string) {
   const cp = ch.codePointAt(0) || 0;
-  return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf);
+  return (
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs
+    (cp >= 0x3400 && cp <= 0x4dbf) || // Extension A
+    (cp >= 0x20000 && cp <= 0x2a6df) || // Extension B
+    (cp >= 0x2a700 && cp <= 0x2b73f) || // Extension C
+    (cp >= 0x2b740 && cp <= 0x2b81f) || // Extension D
+    (cp >= 0x2b820 && cp <= 0x2ceaf) || // Extension E
+    (cp >= 0x2ceb0 && cp <= 0x2ebef) || // Extension F
+    (cp >= 0x30000 && cp <= 0x3134f) || // Extension G
+    (cp >= 0xf900 && cp <= 0xfaff) || // Compatibility Ideographs
+    (cp >= 0x2f800 && cp <= 0x2fa1f) // Compatibility Supplement
+  );
+}
+function isAsciiPrintable(ch: string) {
+  const cp = ch.codePointAt(0) || 0;
+  return cp >= 0x20 && cp <= 0x7e;
 }
 
 /**
  * 规则：
+ * - ASCII (0x20..0x7E) → Helvetica
  * - 假名 → JP
  * - 韩文 → KR
  * - 汉字 → 默认 SC（简中优先；如果你希望繁中优先，把 sc 改 tc）
- * - 其他 → Latin (Helvetica)
+ * - 其他 → SC（或 JP），避免 WinAnsi 编码错误
  */
 function pickFontForChar(fonts: any, ch: string) {
+  if (isAsciiPrintable(ch)) return fonts.latin;
   if (isHiraganaKatakana(ch)) return fonts.jp;
   if (isHangul(ch)) return fonts.kr;
   if (isCJKUnified(ch)) return fonts.sc; // 想繁中优先就改 fonts.tc
-  return fonts.latin;
+  return fonts.sc;
 }
 
 /**
@@ -140,12 +167,11 @@ function pickFontForChar(fonts: any, ch: string) {
 function drawTextRuns(page: any, fonts: any, text: string, x: number, y: number, size: number, color: any) {
   if (!text) return;
   let cursorX = x;
-
   let buf = "";
-  let curFont = pickFontForChar(fonts, Array.from(text)[0]);
+  let curFont: any = null;
 
   const flush = () => {
-    if (!buf) return;
+    if (!buf || !curFont) return;
     page.drawText(buf, { x: cursorX, y, size, font: curFont, color });
     cursorX += curFont.widthOfTextAtSize(buf, size);
     buf = "";
@@ -153,6 +179,7 @@ function drawTextRuns(page: any, fonts: any, text: string, x: number, y: number,
 
   for (const ch of text) {
     const f = pickFontForChar(fonts, ch);
+    if (!curFont) curFont = f;
     if (f !== curFont) {
       flush();
       curFont = f;
@@ -165,6 +192,39 @@ function drawTextRuns(page: any, fonts: any, text: string, x: number, y: number,
 /** =========================
  * 画 Label（top-based 坐标，接近你 Python 模板）
  * ========================= */
+function normalizeText(val: any): string {
+  if (val === null || val === undefined) return "";
+  return String(val)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function measureTextRuns(fonts: any, text: string, size: number) {
+  if (!text) return 0;
+  let width = 0;
+  let buf = "";
+  let curFont: any = null;
+
+  const flush = () => {
+    if (!buf || !curFont) return;
+    width += curFont.widthOfTextAtSize(buf, size);
+    buf = "";
+  };
+
+  for (const ch of text) {
+    const f = pickFontForChar(fonts, ch);
+    if (!curFont) curFont = f;
+    if (f !== curFont) {
+      flush();
+      curFont = f;
+    }
+    buf += ch;
+  }
+  flush();
+  return width;
+}
+
 function drawLabel(page: any, fonts: any, data: {
   backer: string;
   name: string;
@@ -179,60 +239,61 @@ function drawLabel(page: any, fonts: any, data: {
   const W = PAGE_W;
   const H = PAGE_H;
 
-  const marginX = 6;
-  const lineX1 = marginX;
-  const lineX2 = W - marginX;
+  const x = (frac: number) => W * frac;
+  const top = (yFromBottom: number) => (1 - yFromBottom) * H;
 
-  // top-based: (x, topY) -> baseline y
-  const drawTop = (x: number, topY: number, text: string, size: number) => {
+  const drawTopLeft = (xPos: number, topY: number, text: string, size: number) => {
+    const t = normalizeText(text);
+    if (!t) return;
     const baselineY = H - topY - size;
-    drawTextRuns(page, fonts, text ?? "", x, baselineY, size, black);
+    drawTextRuns(page, fonts, t, xPos, baselineY, size, black);
+  };
+
+  const drawTopCenter = (xCenter: number, topY: number, text: string, size: number) => {
+    const t = normalizeText(text);
+    if (!t) return;
+    const baselineY = H - topY - size;
+    const w = measureTextRuns(fonts, t, size);
+    drawTextRuns(page, fonts, t, xCenter - w / 2, baselineY, size, black);
   };
 
   const hlineTop = (topY: number, thickness = 1) => {
     const y = H - topY;
-    page.drawLine({ start: { x: lineX1, y }, end: { x: lineX2, y }, thickness, color: black });
+    page.drawLine({ start: { x: x(0.03), y }, end: { x: x(0.97), y }, thickness, color: black });
   };
 
   // 顶部两行
-  drawTop(marginX, 10, `Backer Number: ${data.backer || ""}`, 8);
-  drawTop(marginX, 24, `Name: ${data.name || ""}`, 8);
+  drawTopLeft(x(0.03), top(0.92), `Backer Number: ${data.backer || ""}`, 7);
+  drawTopLeft(x(0.03), top(0.80), `Name: ${data.name || ""}`, 7);
 
-  hlineTop(34, 1);
+  hlineTop(top(0.74), 1);
 
-  // 左右两列
-  const leftLabelX = marginX;
-  const rightValueX = marginX + 92;
+  // Prescription / Thickness / Coating
+  drawTopLeft(x(0.03), top(0.66), "Prescription:", 6);
+  drawTopLeft(x(0.45), top(0.66), data.presType || "-", 6);
 
-  drawTop(leftLabelX, 48, "Prescription:", 7);
-  drawTop(rightValueX, 48, data.presType || "-", 7);
+  drawTopLeft(x(0.03), top(0.58), "Thickness:", 6);
+  drawTopLeft(x(0.45), top(0.58), data.thickness || "index lens", 6);
 
-  drawTop(leftLabelX, 62, "Thickness:", 7);
-  drawTop(rightValueX, 62, data.thickness || "index lens", 7);
+  drawTopLeft(x(0.03), top(0.50), "Coating:", 6);
+  drawTopLeft(x(0.45), top(0.50), data.coating || "-", 6);
 
-  drawTop(leftLabelX, 76, "Coating:", 7);
-  drawTop(rightValueX, 76, data.coating || "-", 7);
-
-  hlineTop(86, 0.8);
+  hlineTop(top(0.44), 0.8);
 
   // 表格区域
-  const headerTopY = 98;
-  const odTopY = 112;
-  const osTopY = 126;
+  const colX = [0.16, 0.32, 0.48, 0.64, 0.8].map(x);
+  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTopCenter(colX[i], top(0.37), h, 6));
+  drawTopCenter(x(0.06), top(0.29), "od", 6);
+  drawTopCenter(x(0.06), top(0.21), "os", 6);
 
-  const colX = [42, 70, 98, 126, 154];
-  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTop(colX[i] - 6, headerTopY, h, 7));
-  drawTop(marginX + 10, odTopY, "od", 7);
-  drawTop(marginX + 10, osTopY, "os", 7);
+  const vOD = [data.od.sph, data.od.cyl, data.od.axis, data.od.add, data.od.pd].map((v) => v || "-");
+  const vOS = [data.os.sph, data.os.cyl, data.os.axis, data.os.add, data.os.pd].map((v) => v || "-");
 
-  const vOD = [data.od.sph, data.od.cyl, data.od.axis, data.od.add, data.od.pd].map(v => v || "-");
-  const vOS = [data.os.sph, data.os.cyl, data.os.axis, data.os.add, data.os.pd].map(v => v || "-");
+  vOD.forEach((v, i) => drawTopCenter(colX[i], top(0.29), v, 6));
+  vOS.forEach((v, i) => drawTopCenter(colX[i], top(0.21), v, 6));
 
-  vOD.forEach((v, i) => drawTop(colX[i] - 6, odTopY, v, 7));
-  vOS.forEach((v, i) => drawTop(colX[i] - 6, osTopY, v, 7));
-
-  hlineTop(140, 0.8);
-  drawTop(marginX, 154, data.dateStr || "", 7);
+  hlineTop(top(0.15), 0.8);
+  drawTopLeft(x(0.03), top(0.08), data.dateStr || "", 6);
 }
 
 /** =========================
