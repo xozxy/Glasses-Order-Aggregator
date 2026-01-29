@@ -29,6 +29,32 @@ const PAGE_W = 5 * CM_TO_PT;
 const PAGE_H = 4 * CM_TO_PT;
 const DEFAULT_LABEL_LIMIT = 200;
 const MAX_LABEL_LIMIT = 300;
+const AGGREGATE_DROP_DEFAULT = new Set([
+  "Shopify Order ID",
+  "Name",
+  "Email",
+  "Fulfilled at",
+  "Currency",
+  "Subtotal",
+  "Shipping",
+  "Taxes",
+  "Total",
+  "Discount amount",
+  "Shipping method",
+  "Payment Method",
+  "Source",
+  "Billing Address",
+  "Refund amount",
+  "Line Item Vendor",
+  "Line Item Fulfillment Status",
+  "Line Item Discount",
+  "Store",
+  "Upload URL",
+  "Commission charge",
+  "Segment Height",
+  "Ocular Height",
+  "Prism",
+]);
 
 /** =========================
  * 工具函数
@@ -507,6 +533,28 @@ function drawLabel(page: any, fonts: any, data: {
 async function handleAggregate(request: Request) {
   const url = new URL(request.url);
   const format = (url.searchParams.get("format") || "csv").toLowerCase();
+  const dropMode = (url.searchParams.get("drop") || "default").toLowerCase();
+  const dropColsParam = url.searchParams.get("drop_cols") || "";
+
+  const dropSet = new Set<string>();
+  const applyDefault = dropMode !== "none";
+  if (applyDefault) {
+    for (const c of AGGREGATE_DROP_DEFAULT) dropSet.add(c);
+  }
+  if (dropMode === "custom") {
+    dropColsParam
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((c) => dropSet.add(c));
+  }
+
+  const shouldDropColumn = (name: string) => {
+    if (dropSet.has(name)) return true;
+    const m = name.match(/^(.*) \\(Bundle \\d+\\)$/);
+    if (m && dropSet.has(m[1])) return true;
+    return false;
+  };
 
   const form = await request.formData();
   const fileAny = form.get("file");
@@ -524,12 +572,12 @@ async function handleAggregate(request: Request) {
 
   const allColumns = Object.keys(rows[0]);
   const rxRe = /\b(OD|OS|PD|Prism|ADD|Axis|Cylinder|Sphere|Pupillary|base)\b/i;
-  const rxColumns = allColumns.filter((c) => rxRe.test(c) || c === "Lens Notes");
+  const rxColumns = allColumns.filter((c) => (rxRe.test(c) || c === "Lens Notes") && !shouldDropColumn(c));
 
   const lineLevelCols = new Set([LINE_ITEM, QTY, "Line Item Price"]);
   const idCols = new Set([ORDER_ID, BUNDLE_ID]);
   const rxSet = new Set(rxColumns);
-  const orderLevelCols = allColumns.filter((c) => !lineLevelCols.has(c) && !rxSet.has(c) && !idCols.has(c));
+  const orderLevelCols = allColumns.filter((c) => !lineLevelCols.has(c) && !rxSet.has(c) && !idCols.has(c) && !shouldDropColumn(c));
 
   const orderMap = new Map<string, any>();
 
@@ -567,12 +615,22 @@ async function handleAggregate(request: Request) {
     const rowOut: any = { [ORDER_ID]: o.orderId, "Bundle Count": bundles.length, ...o.orderFields };
     bundles.forEach((b: any, idx: number) => {
       const i = idx + 1;
-      rowOut[`Bundle ID (Bundle ${i})`] = b.bundleId;
-      rowOut[`Frame Items (Bundle ${i})`] = uniqPreserveOrder(b.items.Frame).join("; ");
-      rowOut[`Lens Items (Bundle ${i})`] = uniqPreserveOrder(b.items.Lens).join("; ");
-      rowOut[`Coating Items (Bundle ${i})`] = uniqPreserveOrder(b.items.Coating).join("; ");
-      rowOut[`Other Items (Bundle ${i})`] = uniqPreserveOrder(b.items.Other).join("; ");
-      for (const c of rxColumns) rowOut[`${c} (Bundle ${i})`] = b.rx[c] || "";
+      const bundleKeys = {
+        bundleId: `Bundle ID (Bundle ${i})`,
+        frame: `Frame Items (Bundle ${i})`,
+        lens: `Lens Items (Bundle ${i})`,
+        coating: `Coating Items (Bundle ${i})`,
+        other: `Other Items (Bundle ${i})`,
+      };
+      if (!shouldDropColumn(bundleKeys.bundleId)) rowOut[bundleKeys.bundleId] = b.bundleId;
+      if (!shouldDropColumn(bundleKeys.frame)) rowOut[bundleKeys.frame] = uniqPreserveOrder(b.items.Frame).join("; ");
+      if (!shouldDropColumn(bundleKeys.lens)) rowOut[bundleKeys.lens] = uniqPreserveOrder(b.items.Lens).join("; ");
+      if (!shouldDropColumn(bundleKeys.coating)) rowOut[bundleKeys.coating] = uniqPreserveOrder(b.items.Coating).join("; ");
+      if (!shouldDropColumn(bundleKeys.other)) rowOut[bundleKeys.other] = uniqPreserveOrder(b.items.Other).join("; ");
+      for (const c of rxColumns) {
+        const key = `${c} (Bundle ${i})`;
+        if (!shouldDropColumn(key)) rowOut[key] = b.rx[c] || "";
+      }
     });
 
     out.push(rowOut);
@@ -590,7 +648,7 @@ async function handleAggregate(request: Request) {
       ...rxColumns.map((c) => `${c} (Bundle ${i})`)
     );
   }
-  const columns = [...baseCols, ...bundleCols];
+  const columns = [...baseCols, ...bundleCols].filter((c) => !shouldDropColumn(c));
 
   if (format === "xlsx") return new Response("xlsx 暂未启用（当前仅 CSV）", { status: 400 });
 
