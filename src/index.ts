@@ -223,51 +223,84 @@ function drawLabel(page: any, font: any, data: {
   dateStr: string;
 }) {
   const black = rgb(0, 0, 0);
-  const marginL = 6;
-  const marginR = 6;
-  const topY = PAGE_H - 6;
 
-  const text = (x:number, y:number, t:string, size=8) => {
-    page.drawText(t ?? "", { x, y, size, font, color: black });
+  // ==== 采用“从上往下”的坐标系（更接近 matplotlib） ====
+  const W = PAGE_W;
+  const H = PAGE_H;
+
+  const marginX = 6;   // 左右边距（pt）
+  const lineX1 = marginX;
+  const lineX2 = W - marginX;
+
+  // top-based 文本绘制：x为左边，topY为距离顶部的像素
+  const drawTextTop = (x: number, topY: number, text: string, size: number, bold = false) => {
+    const t = text ?? "";
+    const baselineY = H - topY - size; // baseline 修正
+    page.drawText(t, { x, y: baselineY, size, font, color: black });
   };
-  const hline = (y:number, lw=1) => {
-    page.drawLine({ start: { x: marginL, y }, end: { x: PAGE_W - marginR, y }, thickness: lw, color: black });
+
+  // 横线：topY 为距离顶部
+  const hlineTop = (topY: number, thickness = 1) => {
+    const y = H - topY;
+    page.drawLine({
+      start: { x: lineX1, y },
+      end: { x: lineX2, y },
+      thickness,
+      color: black,
+    });
   };
 
-  text(marginL, topY - 10, `Backer Number: ${data.backer}`, 8);
-  text(marginL, topY - 24, `Name: ${data.name}`, 8);
+  // ======== 布局参数（对齐你模板图） ========
+  // 顶部两行
+  drawTextTop(marginX, 10, `Backer Number: ${data.backer || ""}`, 8);
+  drawTextTop(marginX, 24, `Name: ${data.name || ""}`, 8);
 
-  hline(topY - 34, 1);
+  // 第一条线
+  hlineTop(34, 1);
 
-  text(marginL, topY - 48, "Prescription:", 7);
-  text(marginL + 92, topY - 48, data.presType || "-", 7);
+  // Prescription/Thickness/Coating 三行（左右两列）
+  const leftLabelX = marginX;
+  const rightValueX = marginX + 92;
 
-  text(marginL, topY - 62, "Thickness:", 7);
-  text(marginL + 92, topY - 62, data.thickness || "index lens", 7);
+  drawTextTop(leftLabelX, 48, "Prescription:", 7);
+  drawTextTop(rightValueX, 48, data.presType || "-", 7);
 
-  text(marginL, topY - 76, "Coating:", 7);
-  text(marginL + 92, topY - 76, data.coating || "-", 7);
+  drawTextTop(leftLabelX, 62, "Thickness:", 7);
+  drawTextTop(rightValueX, 62, data.thickness || "index lens", 7);
 
-  hline(topY - 86, 0.8);
+  drawTextTop(leftLabelX, 76, "Coating:", 7);
+  drawTextTop(rightValueX, 76, data.coating || "-", 7);
 
-  const headerY = topY - 98;
-  const rowOdY  = topY - 112;
-  const rowOsY  = topY - 126;
+  // 第二条线
+  hlineTop(86, 0.8);
+
+  // 表头
+  const headerTopY = 98;
+  const odTopY = 112;
+  const osTopY = 126;
 
   const colX = [42, 70, 98, 126, 154];
-  ["sph","cyl","axis","add","pd"].forEach((h, i) => text(colX[i] - 6, headerY, h, 7));
-  text(marginL + 10, rowOdY, "od", 7);
-  text(marginL + 10, rowOsY, "os", 7);
+  const headers = ["sph", "cyl", "axis", "add", "pd"];
+
+  headers.forEach((h, i) => drawTextTop(colX[i] - 6, headerTopY, h, 7));
+
+  // od/os 标记
+  drawTextTop(marginX + 10, odTopY, "od", 7);
+  drawTextTop(marginX + 10, osTopY, "os", 7);
 
   const vOD = [data.od.sph, data.od.cyl, data.od.axis, data.od.add, data.od.pd].map(v => v || "-");
   const vOS = [data.os.sph, data.os.cyl, data.os.axis, data.os.add, data.os.pd].map(v => v || "-");
 
-  vOD.forEach((v, i) => text(colX[i] - 6, rowOdY, v, 7));
-  vOS.forEach((v, i) => text(colX[i] - 6, rowOsY, v, 7));
+  vOD.forEach((v, i) => drawTextTop(colX[i] - 6, odTopY, v, 7));
+  vOS.forEach((v, i) => drawTextTop(colX[i] - 6, osTopY, v, 7));
 
-  hline(topY - 140, 0.8);
-  text(marginL, topY - 154, data.dateStr, 7);
+  // 第三条线
+  hlineTop(140, 0.8);
+
+  // 日期
+  drawTextTop(marginX, 154, data.dateStr || "", 7);
 }
+
 
 async function handleLabels(request: Request, env: any) {
   const url = new URL(request.url);
