@@ -1,242 +1,243 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>眼镜订单工具</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:980px;margin:40px auto;padding:0 16px;color:#111827}
-    h1{font-size:32px;margin:0 0 10px}
-    .muted{color:#6b7280;font-size:14px;margin:0 0 20px}
-    .grid{display:grid;grid-template-columns:1fr;gap:16px}
-    .card{border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#fff}
-    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    button{padding:10px 14px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;cursor:pointer}
-    button.secondary{background:#fff;color:#111827}
-    button:disabled{opacity:.5;cursor:not-allowed}
-    select,input[type="file"]{padding:8px;border-radius:10px;border:1px solid #e5e7eb}
-    pre{background:#0b1020;color:#e5e7eb;padding:12px;border-radius:10px;overflow:auto;margin-top:10px;display:none}
-    .title{font-weight:700;margin:0 0 10px}
-    .hint{font-size:13px;color:#6b7280;margin-top:6px}
-  </style>
+  <title>Glasses Order Tools</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-  <h1>眼镜订单明细 → 按订单号聚合（一单一行）</h1>
-  <p class="muted">上传 CSV（每个产品一行），自动聚合为“一个订单号一行”，并保留多副眼镜（Bundle 1/2/3...）。</p>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div class="max-w-6xl mx-auto px-4 py-10">
+    <header class="mb-8">
+      <h1 class="text-3xl font-semibold tracking-tight">Glasses Order Tools</h1>
+      <p class="text-slate-600 mt-2">Aggregate orders into a single-row CSV and generate 5×4cm PDF labels.</p>
+    </header>
 
-  <div class="grid">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Module A: Aggregate CSV -->
+      <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-semibold">Export Aggregated CSV</h2>
+            <p class="text-slate-600 text-sm mt-1">Upload raw order-line CSV to export one-row-per-order CSV.</p>
+          </div>
+          <span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700">Module A</span>
+        </div>
 
-    <!-- 公共：选择文件 -->
-    <div class="card">
-      <div class="title">1) 选择 CSV 文件</div>
-      <div class="row">
-        <input id="file" type="file" accept=".csv" />
-        <button id="btnPing" class="secondary">测试连接</button>
-      </div>
-      <div id="statusGlobal" class="hint"></div>
-      <pre id="logGlobal"></pre>
+        <div class="mt-5 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-700">Order CSV</label>
+            <input id="aggFile" type="file" accept=".csv" class="mt-2 block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800" />
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <button id="aggBtn" class="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Generate Aggregated CSV</button>
+            <button id="aggPing" class="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Test /health</button>
+          </div>
+
+          <div id="aggStatus" class="text-sm text-slate-600"></div>
+          <div id="aggError" class="hidden text-sm text-red-600 whitespace-pre-wrap"></div>
+        </div>
+      </section>
+
+      <!-- Module B: PDF Labels -->
+      <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-semibold">Generate PDF Labels</h2>
+            <p class="text-slate-600 text-sm mt-1">Upload raw or aggregated CSV and generate 5×4cm labels.</p>
+          </div>
+          <span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700">Module B</span>
+        </div>
+
+        <div class="mt-5 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-700">CSV File</label>
+            <input id="pdfFile" type="file" accept=".csv" class="mt-2 block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800" />
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-sm font-medium text-slate-700">Mode</label>
+              <select id="pdfMode" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="bundle" selected>Bundle (per bundle)</option>
+                <option value="order">Order (per order)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-700">Batch Size</label>
+              <select id="pdfBatch" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="300">300</option>
+              </select>
+            </div>
+            <div class="flex items-end">
+              <button id="pdfBtn" class="w-full inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Generate PDF Labels</button>
+            </div>
+          </div>
+
+          <div id="pdfStatus" class="text-sm text-slate-600"></div>
+          <div id="pdfError" class="hidden text-sm text-red-600 whitespace-pre-wrap"></div>
+        </div>
+      </section>
     </div>
-
-    <!-- 聚合导出 -->
-    <div class="card">
-      <div class="title">2) 导出聚合结果（订单一行）</div>
-      <div class="row">
-        <select id="formatAgg">
-          <option value="csv" selected>导出 CSV</option>
-          <option value="xlsx">导出 Excel（暂未启用，可后续加）</option>
-        </select>
-        <button id="btnAgg">开始处理并下载</button>
-      </div>
-      <div id="statusAgg" class="hint"></div>
-      <pre id="logAgg"></pre>
-    </div>
-
-    <!-- PDF Label -->
-    <div class="card">
-      <div class="title">3) 生成 PDF Label（5×4cm）</div>
-      <div class="row">
-        <select id="modePdf">
-          <option value="bundle" selected>按 Bundle 生成（每副眼镜一张标签）</option>
-          <option value="order">按订单生成（每单一张标签）</option>
-        </select>
-        <select id="batchPdf">
-          <option value="100">批量 100/次</option>
-          <option value="200" selected>批量 200/次</option>
-          <option value="300">批量 300/次</option>
-        </select>
-        <button id="btnPdf">生成并下载 PDF</button>
-      </div>
-      <div class="hint">
-        说明：默认会从你上传的“订单明细 CSV”里读取姓名、镜片、镀膜、以及 OD/OS/PD 等字段（若字段不存在会留空/用“-”占位）。
-      </div>
-      <div id="statusPdf" class="hint"></div>
-      <pre id="logPdf"></pre>
-    </div>
-
   </div>
 
-<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script>
-const fileEl = document.getElementById('file');
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script>
+    const aggFile = document.getElementById('aggFile');
+    const aggBtn = document.getElementById('aggBtn');
+    const aggPing = document.getElementById('aggPing');
+    const aggStatus = document.getElementById('aggStatus');
+    const aggError = document.getElementById('aggError');
 
-const statusGlobal = document.getElementById('statusGlobal');
-const logGlobal = document.getElementById('logGlobal');
-const statusAgg = document.getElementById('statusAgg');
-const logAgg = document.getElementById('logAgg');
-const statusPdf = document.getElementById('statusPdf');
-const logPdf = document.getElementById('logPdf');
+    const pdfFile = document.getElementById('pdfFile');
+    const pdfMode = document.getElementById('pdfMode');
+    const pdfBatch = document.getElementById('pdfBatch');
+    const pdfBtn = document.getElementById('pdfBtn');
+    const pdfStatus = document.getElementById('pdfStatus');
+    const pdfError = document.getElementById('pdfError');
 
-function setStatus(statusEl, logEl, msg, isError=false, logText=""){
-  statusEl.textContent = msg || "";
-  if(isError){
-    logEl.style.display = "block";
-    logEl.textContent = logText || "";
-  }else{
-    logEl.style.display = "none";
-    logEl.textContent = "";
-  }
-}
+    function setStatus(el, msg) {
+      el.textContent = msg || '';
+    }
 
-async function downloadFromEndpoint(url, file, defaultName){
-  const fd = new FormData();
-  fd.append("file", file);
-
-  const res = await fetch(url, { method: "POST", body: fd });
-  if(!res.ok){
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status}\n\n${text}`);
-  }
-
-  const blob = await res.blob();
-  const cd = res.headers.get("content-disposition") || "";
-  const match = cd.match(/filename="([^"]+)"/i);
-  const filename = match ? match[1] : defaultName;
-
-  const objUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(objUrl);
-}
-
-function parseTotalFromError(text){
-  const m = String(text || "").match(/Too many labels \((\d+)\)/i);
-  return m ? Number(m[1]) : null;
-}
-
-function makeFormData(file){
-  const fd = new FormData();
-  fd.append("file", file);
-  return fd;
-}
-
-// 测试连接
-document.getElementById("btnPing").addEventListener("click", async () => {
-  try{
-    setStatus(statusGlobal, logGlobal, "检测中...");
-    const res = await fetch("/health");
-    if(!res.ok) throw new Error("health not ok");
-    const t = await res.text();
-    setStatus(statusGlobal, logGlobal, `OK: ${t}`);
-  }catch(e){
-    setStatus(statusGlobal, logGlobal, "失败", true, String(e));
-  }
-});
-
-// 聚合
-document.getElementById('btnAgg').addEventListener('click', async () => {
-  const f = fileEl.files?.[0];
-  if(!f){ setStatus(statusAgg, logAgg, "请先选择 CSV 文件"); return; }
-
-  const format = document.getElementById("formatAgg").value;
-
-  setStatus(statusAgg, logAgg, "处理中...");
-  try{
-    await downloadFromEndpoint(`/api/aggregate?format=${encodeURIComponent(format)}`, f, "orders_one_row.csv");
-    setStatus(statusAgg, logAgg, "完成：已开始下载");
-  }catch(e){
-    setStatus(statusAgg, logAgg, "处理失败", true, String(e));
-  }
-});
-
-// PDF
-document.getElementById('btnPdf').addEventListener('click', async () => {
-  const f = fileEl.files?.[0];
-  if(!f){ setStatus(statusPdf, logPdf, "请先选择 CSV 文件"); return; }
-
-  const mode = document.getElementById("modePdf").value;
-  const batchSize = Number(document.getElementById("batchPdf").value) || 200;
-
-  setStatus(statusPdf, logPdf, "生成 PDF 中...");
-  try{
-    // Try single request first
-    try{
-      const res = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}`, { method: "POST", body: makeFormData(f) });
-      if(res.ok){
-        const blob = await res.blob();
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objUrl;
-        a.download = "labels_5x4cm.pdf";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(objUrl);
-        setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
+    function setError(el, msg) {
+      if (!msg) {
+        el.classList.add('hidden');
+        el.textContent = '';
         return;
       }
-      const errText = await res.text();
-      const total = parseTotalFromError(errText);
-      if(!total){
-        throw new Error(`HTTP ${res.status}\n\n${errText}`);
-      }
+      el.classList.remove('hidden');
+      el.textContent = msg;
+    }
 
-      if(!window.PDFLib || !window.PDFLib.PDFDocument){
-        throw new Error("pdf-lib 未加载，无法合并 PDF");
-      }
-
-      const { PDFDocument } = window.PDFLib;
-      const merged = await PDFDocument.create();
-      let done = 0;
-
-      for(let start = 0; start < total; start += batchSize){
-        const limit = Math.min(batchSize, total - start);
-        setStatus(statusPdf, logPdf, `正在生成 ${Math.min(start + limit, total)}/${total}…`);
-        const batchRes = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${start}&limit=${limit}`, { method: "POST", body: makeFormData(f) });
-        if(!batchRes.ok){
-          const t = await batchRes.text();
-          throw new Error(`批次失败 start=${start} limit=${limit}\nHTTP ${batchRes.status}\n\n${t}`);
-        }
-        const ab = await batchRes.arrayBuffer();
-        const src = await PDFDocument.load(ab);
-        const pages = await merged.copyPages(src, src.getPageIndices());
-        pages.forEach(p => merged.addPage(p));
-        done = Math.min(start + limit, total);
-        setStatus(statusPdf, logPdf, `合并中 ${done}/${total}…`);
-      }
-
-      setStatus(statusPdf, logPdf, "写入最终 PDF...");
-      const mergedBytes = await merged.save();
-      const mergedBlob = new Blob([mergedBytes], { type: "application/pdf" });
-      const objUrl = URL.createObjectURL(mergedBlob);
-      const a = document.createElement("a");
-      a.href = objUrl;
-      a.download = "labels_5x4cm.pdf";
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(objUrl);
-      setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
-    }catch(e){
-      throw e;
+      URL.revokeObjectURL(url);
     }
-  }catch(e){
-    setStatus(statusPdf, logPdf, "生成失败", true, String(e));
-  }
-});
-</script>
+
+    function parseTotalFromError(text) {
+      const m = String(text || '').match(/Too many labels \((\d+)\)/i);
+      return m ? Number(m[1]) : null;
+    }
+
+    function makeFormData(file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      return fd;
+    }
+
+    // Module A: Aggregate
+    aggPing.addEventListener('click', async () => {
+      setError(aggError, '');
+      setStatus(aggStatus, 'Checking /health...');
+      try {
+        const res = await fetch('/health');
+        if (!res.ok) throw new Error('health not ok');
+        const t = await res.text();
+        setStatus(aggStatus, `OK: ${t}`);
+      } catch (e) {
+        setStatus(aggStatus, '');
+        setError(aggError, String(e));
+      }
+    });
+
+    aggBtn.addEventListener('click', async () => {
+      setError(aggError, '');
+      const file = aggFile.files?.[0];
+      if (!file) {
+        setStatus(aggStatus, '');
+        setError(aggError, 'Please choose a CSV file.');
+        return;
+      }
+      setStatus(aggStatus, 'Generating aggregated CSV...');
+      try {
+        const res = await fetch('/api/aggregate', { method: 'POST', body: makeFormData(file) });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`HTTP ${res.status}\n\n${text}`);
+        }
+        const blob = await res.blob();
+        downloadBlob(blob, 'orders_one_row.csv');
+        setStatus(aggStatus, 'Done. Download started.');
+      } catch (e) {
+        setStatus(aggStatus, '');
+        setError(aggError, String(e));
+      }
+    });
+
+    // Module B: PDF Labels
+    pdfBtn.addEventListener('click', async () => {
+      setError(pdfError, '');
+      const file = pdfFile.files?.[0];
+      if (!file) {
+        setStatus(pdfStatus, '');
+        setError(pdfError, 'Please choose a CSV file.');
+        return;
+      }
+
+      const mode = pdfMode.value;
+      const batchSize = Number(pdfBatch.value) || 200;
+
+      setStatus(pdfStatus, 'Generating PDF...');
+      try {
+        // Try single request first
+        const res = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}`, { method: 'POST', body: makeFormData(file) });
+        if (res.ok) {
+          const blob = await res.blob();
+          downloadBlob(blob, 'labels_5x4cm.pdf');
+          setStatus(pdfStatus, 'Done. Download started.');
+          return;
+        }
+
+        const errText = await res.text();
+        const total = parseTotalFromError(errText);
+        if (!total) {
+          throw new Error(`HTTP ${res.status}\n\n${errText}`);
+        }
+
+        if (!window.PDFLib || !window.PDFLib.PDFDocument) {
+          throw new Error('pdf-lib is not loaded.');
+        }
+
+        const { PDFDocument } = window.PDFLib;
+        const merged = await PDFDocument.create();
+        let done = 0;
+
+        for (let start = 0; start < total; start += batchSize) {
+          const limit = Math.min(batchSize, total - start);
+          setStatus(pdfStatus, `Generating ${Math.min(start + limit, total)}/${total}...`);
+          const batchRes = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${start}&limit=${limit}`, { method: 'POST', body: makeFormData(file) });
+          if (!batchRes.ok) {
+            const t = await batchRes.text();
+            throw new Error(`Batch failed start=${start} limit=${limit}\nHTTP ${batchRes.status}\n\n${t}`);
+          }
+          const ab = await batchRes.arrayBuffer();
+          const src = await PDFDocument.load(ab);
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          pages.forEach((p) => merged.addPage(p));
+          done = Math.min(start + limit, total);
+          setStatus(pdfStatus, `Merging ${done}/${total}...`);
+        }
+
+        setStatus(pdfStatus, 'Finalizing PDF...');
+        const mergedBytes = await merged.save();
+        const mergedBlob = new Blob([mergedBytes], { type: 'application/pdf' });
+        downloadBlob(mergedBlob, 'labels_5x4cm.pdf');
+        setStatus(pdfStatus, 'Done. Download started.');
+      } catch (e) {
+        setStatus(pdfStatus, '');
+        setError(pdfError, String(e));
+      }
+    });
+  </script>
 </body>
 </html>
