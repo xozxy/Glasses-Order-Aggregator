@@ -68,7 +68,7 @@ function fmtTwoDec(x: any): string {
   if (x === null || x === undefined) return "";
   if (typeof x === "string") {
     const s = x.trim();
-    if (s === "" || s.toLowerCase() === "nan") return "";
+    if (s === "" || s === "/" || s.toLowerCase() === "nan") return "";
     const n = Number(s);
     return Number.isFinite(n) ? n.toFixed(2) : "";
   }
@@ -82,7 +82,7 @@ function fmtAxis(x: any): string {
   if (x === null || x === undefined) return "";
   if (typeof x === "string") {
     const s = x.trim();
-    if (s === "" || s.toLowerCase() === "nan") return "";
+    if (s === "" || s === "/" || s.toLowerCase() === "nan") return "";
     const n = Number(s);
     return Number.isFinite(n) ? String(Math.round(n)) : "";
   }
@@ -326,6 +326,72 @@ function buildCoatingLines(fonts: any, raw: string, size: number, maxWidth: numb
     lines[lines.length - 1] = `${lines[lines.length - 1]}...`;
   }
   return lines.map((line) => fitLine(fonts, line, size, maxWidth));
+}
+
+const RX_KEYS = {
+  od_sph: ["OD SPH", "OD_SPH", "Sphere OD", "OD Sphere"],
+  od_cyl: ["OD CYL", "OD_CYL", "Cylinder OD", "OD Cylinder"],
+  od_axis: ["OD Axis", "OD_AXIS", "Axis OD", "OD Axis"],
+  od_add: ["OD ADD", "OD_ADD", "ADD OD", "Add OD"],
+  os_sph: ["OS SPH", "OS_SPH", "Sphere OS", "OS Sphere"],
+  os_cyl: ["OS CYL", "OS_CYL", "Cylinder OS", "OS Cylinder"],
+  os_axis: ["OS Axis", "OS_AXIS", "Axis OS", "OS Axis"],
+  os_add: ["OS ADD", "OS_ADD", "ADD OS", "Add OS"],
+  pd_od: ["PD OD", "PD_OD", "OD PD", "Pupillary Distance OD"],
+  pd_os: ["PD OS", "PD_OS", "OS PD", "Pupillary Distance OS"],
+  pres_type: ["Prescription Type", "Prescription", "Lens Type"],
+};
+
+function pickFromBundle(row: Record<string, any>, keys: string[], bundleIndex: number) {
+  for (const key of keys) {
+    const bundleKey = `${key} (Bundle ${bundleIndex})`;
+    const v = row[bundleKey];
+    if (v !== null && v !== undefined && String(v).trim() !== "") return v;
+  }
+  return pick(row, keys);
+}
+
+function isAggregatedHeaders(headers: string[]) {
+  return headers.includes("Bundle Count") || headers.some((h) => /\(Bundle\s+\d+\)/i.test(h));
+}
+
+function getBundleIndices(headers: string[]) {
+  const set = new Set<number>();
+  for (const h of headers) {
+    const m = h.match(/\(Bundle\s+(\d+)\)/i);
+    if (m) set.add(Number(m[1]));
+  }
+  return Array.from(set).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+}
+
+function buildBundleColumnsMap(headers: string[]) {
+  const map = new Map<number, string[]>();
+  for (const h of headers) {
+    const m = h.match(/\(Bundle\s+(\d+)\)/i);
+    if (!m) continue;
+    const idx = Number(m[1]);
+    if (!Number.isFinite(idx) || idx <= 0) continue;
+    if (!map.has(idx)) map.set(idx, []);
+    map.get(idx)!.push(h);
+  }
+  return map;
+}
+
+function inferBundleCount(row: Record<string, any>, bundleIndices: number[], bundleColumnsMap: Map<number, string[]>) {
+  const bc = Number(row["Bundle Count"]);
+  if (Number.isFinite(bc) && bc > 0) return Math.floor(bc);
+  let maxIdx = 0;
+  for (const idx of bundleIndices) {
+    const cols = bundleColumnsMap.get(idx) || [];
+    for (const c of cols) {
+      const v = row[c];
+      if (v !== null && v !== undefined && String(v).trim() !== "") {
+        maxIdx = Math.max(maxIdx, idx);
+        break;
+      }
+    }
+  }
+  return maxIdx;
 }
 
 function measureTextRuns(fonts: any, text: string, size: number) {
@@ -574,10 +640,27 @@ async function handleLabels(request: Request, env: any) {
     const rows = parsed.data || [];
     if (!rows.length) return new Response("Empty CSV", { status: 400 });
 
-    for (const col of [ORDER_ID, BUNDLE_ID, LINE_ITEM, QTY]) {
-      if (!(col in rows[0])) return new Response(`Missing required column: ${col}`, { status: 400 });
+    const headers = Object.keys(rows[0] || {});
+    const aggregated = isAggregatedHeaders(headers);
+    let bundleIndices: number[] = [];
+    let bundleColumnsMap = new Map<number, string[]>();
+
+    if (aggregated) {
+      if (!(ORDER_ID in rows[0])) return new Response(`Missing required column: ${ORDER_ID}`, { status: 400 });
+      bundleIndices = getBundleIndices(headers);
+      bundleColumnsMap = buildBundleColumnsMap(headers);
+      if (!bundleIndices.length) {
+        return new Response("Aggregated CSV detected but no Bundle columns found. Please upload raw CSV or orders_one_row.csv.", { status: 400 });
+      }
+      if (mode === "order" && !headers.some((h) => /\(Bundle\s+1\)/i.test(h))) {
+        return new Response("Aggregated CSV missing Bundle 1 columns for order mode.", { status: 400 });
+      }
+    } else {
+      for (const col of [ORDER_ID, BUNDLE_ID, LINE_ITEM, QTY]) {
+        if (!(col in rows[0])) return new Response(`Missing required column: ${col}`, { status: 400 });
+      }
     }
-    log(`csv parsed rows=${rows.length}`);
+    log(`csv parsed rows=${rows.length} aggregated=${aggregated}`);
 
     stage = "scan-text";
     const needs: FontNeeds = { jp: false, kr: false, sc: false, other: false, nonAscii: false };
@@ -585,44 +668,88 @@ async function handleLabels(request: Request, env: any) {
     // === 组织 order/bundle ===
     const orderMap = new Map<string, any>();
 
-    for (const r of rows) {
-      const orderId = r[ORDER_ID];
-      const bundleId = r[BUNDLE_ID];
-      scanTextForFonts(orderId, needs);
-      scanTextForFonts(bundleId, needs);
-
-      if (!orderMap.has(orderId)) orderMap.set(orderId, { orderId, name: "", bundles: new Map<string, any>() });
-      const o = orderMap.get(orderId);
-
-      if (!o.name && String(r["Name"] ?? "").trim() !== "") {
-        o.name = String(r["Name"]);
-        scanTextForFonts(o.name, needs);
-      }
-
-      if (!o.bundles.has(bundleId)) {
-        o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {} });
-      }
-      const b = o.bundles.get(bundleId);
-
-      const item = r[LINE_ITEM];
-      const qty = Number(r[QTY]) || 1;
-      const display = qty !== 1 ? `${item} x${qty}` : String(item);
-      b.items[categorize(item)].push(display);
-      scanTextForFonts(item, needs);
-
-      // 尽量收集处方字段（兼容不同列名）
+    if (!aggregated) {
       const keysToKeep = [
-        "OD_SPH","OD_CYL","OD_AXIS","OD_ADD",
-        "OS_SPH","OS_CYL","OS_AXIS","OS_ADD",
-        "Sphere OD","Cylinder OD","Axis OD","ADD OD","Add OD",
-        "Sphere OS","Cylinder OS","Axis OS","ADD OS","Add OS",
-        "PD_OD","PD_OS","Single PD","PD",
-        "Prescription Type","Prescription","Lens Type"
+        ...RX_KEYS.od_sph,
+        ...RX_KEYS.od_cyl,
+        ...RX_KEYS.od_axis,
+        ...RX_KEYS.od_add,
+        ...RX_KEYS.os_sph,
+        ...RX_KEYS.os_cyl,
+        ...RX_KEYS.os_axis,
+        ...RX_KEYS.os_add,
+        ...RX_KEYS.pd_od,
+        ...RX_KEYS.pd_os,
+        ...RX_KEYS.pres_type,
+        "Single PD",
+        "PD",
       ];
-      for (const k of keysToKeep) {
-        if (!b.rx[k] && String(r[k] ?? "").trim() !== "") {
-          b.rx[k] = r[k];
-          scanTextForFonts(r[k], needs);
+
+      for (const r of rows) {
+        const orderId = r[ORDER_ID];
+        const bundleId = r[BUNDLE_ID];
+        scanTextForFonts(orderId, needs);
+        scanTextForFonts(bundleId, needs);
+
+        if (!orderMap.has(orderId)) orderMap.set(orderId, { orderId, name: "", bundles: new Map<string, any>() });
+        const o = orderMap.get(orderId);
+
+        if (!o.name && String(r["Name"] ?? "").trim() !== "") {
+          o.name = String(r["Name"]);
+          scanTextForFonts(o.name, needs);
+        }
+
+        if (!o.bundles.has(bundleId)) {
+          o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {} });
+        }
+        const b = o.bundles.get(bundleId);
+
+        const item = r[LINE_ITEM];
+        const qty = Number(r[QTY]) || 1;
+        const display = qty !== 1 ? `${item} x${qty}` : String(item);
+        b.items[categorize(item)].push(display);
+        scanTextForFonts(item, needs);
+
+        for (const k of keysToKeep) {
+          if (!b.rx[k] && String(r[k] ?? "").trim() !== "") {
+            b.rx[k] = r[k];
+            scanTextForFonts(r[k], needs);
+          }
+        }
+      }
+    } else {
+      for (const r of rows) {
+        const orderId = r[ORDER_ID];
+        const name = String(r["Name"] ?? "");
+        scanTextForFonts(orderId, needs);
+        if (name.trim()) scanTextForFonts(name, needs);
+
+        const bundleCount = inferBundleCount(r, bundleIndices, bundleColumnsMap);
+        if (mode === "order" && bundleCount < 1) continue;
+        const bundleList = mode === "order" ? [1] : Array.from({ length: bundleCount }, (_, i) => i + 1);
+
+        for (const i of bundleList) {
+          const bundleId = pickFromBundle(r, ["Bundle ID"], i);
+          if (bundleId) scanTextForFonts(bundleId, needs);
+
+          const lensText = String(pickFromBundle(r, ["Lens Items"], i) ?? "");
+          const coatingText = String(pickFromBundle(r, ["Coating Items"], i) ?? "");
+          scanTextForFonts(lensText, needs);
+          scanTextForFonts(coatingText, needs);
+
+          const presType = String(pickFromBundle(r, RX_KEYS.pres_type, i) ?? "");
+          scanTextForFonts(presType, needs);
+
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.od_sph, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.od_cyl, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.od_axis, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.od_add, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.os_sph, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.os_cyl, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.os_axis, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.os_add, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.pd_od, i), needs);
+          scanTextForFonts(pickFromBundle(r, RX_KEYS.pd_os, i), needs);
         }
       }
     }
@@ -635,10 +762,25 @@ async function handleLabels(request: Request, env: any) {
 
     stage = "count-labels";
     let totalLabels = 0;
-    for (const [, o] of orderMap) {
-      const bundles = Array.from(o.bundles.values());
-      totalLabels += mode === "order" ? (bundles.length ? 1 : 0) : bundles.length;
+    if (!aggregated) {
+      for (const [, o] of orderMap) {
+        const bundles = Array.from(o.bundles.values());
+        totalLabels += mode === "order" ? (bundles.length ? 1 : 0) : bundles.length;
+      }
+    } else {
+      for (const r of rows) {
+        const bundleCount = inferBundleCount(r, bundleIndices, bundleColumnsMap);
+        if (mode === "order") {
+          if (bundleCount >= 1) totalLabels += 1;
+        } else {
+          if (bundleCount >= 1) totalLabels += bundleCount;
+        }
+      }
+      if (totalLabels === 0) {
+        return new Response("No bundles found in aggregated CSV for the selected mode.", { status: 400 });
+      }
     }
+
     if (!paging && totalLabels > DEFAULT_LABEL_LIMIT) {
       return new Response(
         `Too many labels (${totalLabels}). Use ?start=0&limit=${DEFAULT_LABEL_LIMIT} to generate in batches (max ${MAX_LABEL_LIMIT}).`,
@@ -702,56 +844,116 @@ async function handleLabels(request: Request, env: any) {
     stage = "generate-pages";
     let generated = 0;
     let idx = 0;
-    outer: for (const [, o] of orderMap) {
-      const bundles = Array.from(o.bundles.values()).sort((a: any, b: any) => String(a.bundleId).localeCompare(String(b.bundleId)));
-      const targets = mode === "order" ? (bundles.length ? [bundles[0]] : []) : bundles;
 
-      for (const b of targets) {
-        if (idx < start) {
+    if (!aggregated) {
+      outer: for (const [, o] of orderMap) {
+        const bundles = Array.from(o.bundles.values()).sort((a: any, b: any) => String(a.bundleId).localeCompare(String(b.bundleId)));
+        const targets = mode === "order" ? (bundles.length ? [bundles[0]] : []) : bundles;
+
+        for (const b of targets) {
+          if (idx < start) {
+            idx++;
+            continue;
+          }
+          if (generated >= limit) break outer;
+
+          const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
+          const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
+
+          const idxLens = parseIndexLensFromText(lensText);
+          const thickness = idxLens ? `${idxLens} index lens` : "index lens";
+
+          let coating = "Blue Light Blocking";
+          if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
+
+          const presType = String(pick(b.rx, RX_KEYS.pres_type)) || "Single Vision";
+
+          const od_sph  = fmtTwoDec(pick(b.rx, RX_KEYS.od_sph));
+          const od_cyl  = fmtTwoDec(pick(b.rx, RX_KEYS.od_cyl));
+          const od_axis = fmtAxis(pick(b.rx, RX_KEYS.od_axis));
+          const od_add  = fmtTwoDec(pick(b.rx, RX_KEYS.od_add));
+
+          const os_sph  = fmtTwoDec(pick(b.rx, RX_KEYS.os_sph));
+          const os_cyl  = fmtTwoDec(pick(b.rx, RX_KEYS.os_cyl));
+          const os_axis = fmtAxis(pick(b.rx, RX_KEYS.os_axis));
+          const os_add  = fmtTwoDec(pick(b.rx, RX_KEYS.os_add));
+
+          const [pd_od, pd_os] = getPD(b.rx);
+
+          const page = pdf.addPage([PAGE_W, PAGE_H]);
+          drawLabel(page, fonts, {
+            backer: mode === "order" ? String(o.orderId) : String(b.bundleId),
+            name: o.name || "-",
+            presType,
+            thickness,
+            coating,
+            od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
+            os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
+            dateStr,
+          });
+
+          generated++;
           idx++;
-          continue;
         }
-        if (generated >= limit) break outer;
+      }
+    } else {
+      outer: for (const r of rows) {
+        const orderId = r[ORDER_ID];
+        const name = String(r["Name"] ?? "");
+        const bundleCount = inferBundleCount(r, bundleIndices, bundleColumnsMap);
+        if (mode === "order" && bundleCount < 1) continue;
+        const bundleList = mode === "order" ? [1] : Array.from({ length: bundleCount }, (_, i) => i + 1);
 
-        const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
-        const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
+        for (const i of bundleList) {
+          if (idx < start) {
+            idx++;
+            continue;
+          }
+          if (generated >= limit) break outer;
 
-        const idxLens = parseIndexLensFromText(lensText);
-        const thickness = idxLens ? `${idxLens} index lens` : "index lens";
+          const lensText = String(pickFromBundle(r, ["Lens Items"], i) ?? "");
+          const coatingText = String(pickFromBundle(r, ["Coating Items"], i) ?? "");
 
-        let coating = "Blue Light Blocking";
-        if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
+          const idxLens = parseIndexLensFromText(lensText);
+          const thickness = idxLens ? `${idxLens} index lens` : "index lens";
 
-        const presType = String(pick(b.rx, ["Prescription Type", "Prescription", "Lens Type"])) || "Single Vision";
+          let coating = "Blue Light Blocking";
+          if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
 
-        const od_sph  = fmtTwoDec(pick(b.rx, ["OD_SPH", "Sphere OD", "OD Sphere"]));
-        const od_cyl  = fmtTwoDec(pick(b.rx, ["OD_CYL", "Cylinder OD", "OD Cylinder"]));
-        const od_axis = fmtAxis(pick(b.rx, ["OD_AXIS", "Axis OD", "OD Axis"]));
-        const od_add  = fmtTwoDec(pick(b.rx, ["OD_ADD", "ADD OD", "Add OD"]));
+          const presType = String(pickFromBundle(r, RX_KEYS.pres_type, i)) || "Single Vision";
 
-        const os_sph  = fmtTwoDec(pick(b.rx, ["OS_SPH", "Sphere OS", "OS Sphere"]));
-        const os_cyl  = fmtTwoDec(pick(b.rx, ["OS_CYL", "Cylinder OS", "OS Cylinder"]));
-        const os_axis = fmtAxis(pick(b.rx, ["OS_AXIS", "Axis OS", "OS Axis"]));
-        const os_add  = fmtTwoDec(pick(b.rx, ["OS_ADD", "ADD OS", "Add OS"]));
+          const od_sph  = fmtTwoDec(pickFromBundle(r, RX_KEYS.od_sph, i));
+          const od_cyl  = fmtTwoDec(pickFromBundle(r, RX_KEYS.od_cyl, i));
+          const od_axis = fmtAxis(pickFromBundle(r, RX_KEYS.od_axis, i));
+          const od_add  = fmtTwoDec(pickFromBundle(r, RX_KEYS.od_add, i));
 
-        const [pd_od, pd_os] = getPD(b.rx);
+          const os_sph  = fmtTwoDec(pickFromBundle(r, RX_KEYS.os_sph, i));
+          const os_cyl  = fmtTwoDec(pickFromBundle(r, RX_KEYS.os_cyl, i));
+          const os_axis = fmtAxis(pickFromBundle(r, RX_KEYS.os_axis, i));
+          const os_add  = fmtTwoDec(pickFromBundle(r, RX_KEYS.os_add, i));
 
-        const page = pdf.addPage([PAGE_W, PAGE_H]);
-        drawLabel(page, fonts, {
-          backer: mode === "order" ? String(o.orderId) : String(b.bundleId),
-          name: o.name || "-",
-          presType,
-          thickness,
-          coating,
-          od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
-          os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
-          dateStr,
-        });
+          const pd_od = fmtTwoDec(pickFromBundle(r, RX_KEYS.pd_od, i));
+          const pd_os = fmtTwoDec(pickFromBundle(r, RX_KEYS.pd_os, i));
 
-        generated++;
-        idx++;
+          const bundleId = pickFromBundle(r, ["Bundle ID"], i);
+          const page = pdf.addPage([PAGE_W, PAGE_H]);
+          drawLabel(page, fonts, {
+            backer: mode === "order" ? String(orderId) : String(bundleId || `${orderId}-${i}`),
+            name: name || "-",
+            presType,
+            thickness,
+            coating,
+            od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
+            os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
+            dateStr,
+          });
+
+          generated++;
+          idx++;
+        }
       }
     }
+
     log(`pages generated=${generated}`);
 
     stage = "save-pdf";
