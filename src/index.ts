@@ -65,10 +65,30 @@ function parseIndexLensFromText(val: any): string {
 }
 
 function fmtTwoDec(x: any): string {
+  if (x === null || x === undefined) return "";
+  if (typeof x === "string") {
+    const s = x.trim();
+    if (s === "" || s.toLowerCase() === "nan") return "";
+    const n = Number(s);
+    return Number.isFinite(n) ? n.toFixed(2) : "";
+  }
+  if (typeof x === "number") {
+    return Number.isFinite(x) ? x.toFixed(2) : "";
+  }
   const n = Number(x);
   return Number.isFinite(n) ? n.toFixed(2) : "";
 }
 function fmtAxis(x: any): string {
+  if (x === null || x === undefined) return "";
+  if (typeof x === "string") {
+    const s = x.trim();
+    if (s === "" || s.toLowerCase() === "nan") return "";
+    const n = Number(s);
+    return Number.isFinite(n) ? String(Math.round(n)) : "";
+  }
+  if (typeof x === "number") {
+    return Number.isFinite(x) ? String(Math.round(x)) : "";
+  }
   const n = Number(x);
   return Number.isFinite(n) ? String(Math.round(n)) : "";
 }
@@ -232,6 +252,82 @@ function normalizeText(val: any): string {
     .trim();
 }
 
+function splitCoatingText(text: string) {
+  const parts = text
+    .split(/[;,/]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts;
+}
+
+function truncateToFit(fonts: any, text: string, size: number, maxWidth: number) {
+  const ellipsis = "...";
+  if (measureTextRuns(fonts, text, size) <= maxWidth) return text;
+  const ellWidth = measureTextRuns(fonts, ellipsis, size);
+  if (ellWidth > maxWidth) return ellipsis;
+  const chars = Array.from(text);
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = chars.slice(0, mid).join("") + ellipsis;
+    if (measureTextRuns(fonts, candidate, size) <= maxWidth) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  const cut = Math.max(0, lo - 1);
+  return chars.slice(0, cut).join("") + ellipsis;
+}
+
+function fitLine(fonts: any, text: string, size: number, maxWidth: number, minSize = 4) {
+  let curSize = size;
+  while (curSize >= minSize) {
+    if (measureTextRuns(fonts, text, curSize) <= maxWidth) return { text, size: curSize };
+    curSize -= 1;
+  }
+  return { text: truncateToFit(fonts, text, minSize, maxWidth), size: minSize };
+}
+
+function buildCoatingLines(fonts: any, raw: string, size: number, maxWidth: number, maxLines = 2) {
+  const text = normalizeText(raw);
+  if (!text) return [{ text: "-", size }];
+  const parts = splitCoatingText(text);
+  if (!parts.length) return [{ text: "-", size }];
+
+  const lines: string[] = [];
+  let current = "";
+  let overflow = false;
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const candidate = current ? `${current}; ${part}` : part;
+    if (measureTextRuns(fonts, candidate, size) <= maxWidth || current === "") {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = part;
+      if (lines.length === maxLines - 1) {
+        if (i + 1 < parts.length) {
+          current = `${current}; ${parts.slice(i + 1).join("; ")}`;
+          overflow = true;
+          break;
+        }
+      }
+    }
+  }
+  if (current) lines.push(current);
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    overflow = true;
+  }
+  if (overflow && lines.length) {
+    lines[lines.length - 1] = `${lines[lines.length - 1]}...`;
+  }
+  return lines.map((line) => fitLine(fonts, line, size, maxWidth));
+}
+
 function measureTextRuns(fonts: any, text: string, size: number) {
   if (!text) return 0;
   if (isAsciiString(text)) return fonts.latin.widthOfTextAtSize(text, size);
@@ -271,6 +367,8 @@ function drawLabel(page: any, fonts: any, data: {
   const black = rgb(0, 0, 0);
   const W = PAGE_W;
   const H = PAGE_H;
+  const titleSize = 6;
+  const bodySize = 5;
 
   const x = (frac: number) => W * frac;
   const top = (yFromBottom: number) => (1 - yFromBottom) * H;
@@ -296,37 +394,45 @@ function drawLabel(page: any, fonts: any, data: {
   };
 
   // 顶部两行
-  drawTopLeft(x(0.03), top(0.92), `Backer Number: ${data.backer || ""}`, 7);
-  drawTopLeft(x(0.03), top(0.80), `Name: ${data.name || ""}`, 7);
+  drawTopLeft(x(0.03), top(0.92), `Backer Number: ${data.backer || ""}`, titleSize);
+  drawTopLeft(x(0.03), top(0.80), `Name: ${data.name || ""}`, titleSize);
 
   hlineTop(top(0.74), 1);
 
   // Prescription / Thickness / Coating
-  drawTopLeft(x(0.03), top(0.66), "Prescription:", 6);
-  drawTopLeft(x(0.45), top(0.66), data.presType || "-", 6);
+  const rightValueX = x(0.45);
+  const rightMaxWidth = x(0.97) - rightValueX;
 
-  drawTopLeft(x(0.03), top(0.58), "Thickness:", 6);
-  drawTopLeft(x(0.45), top(0.58), data.thickness || "index lens", 6);
+  drawTopLeft(x(0.03), top(0.66), "Prescription:", bodySize);
+  drawTopLeft(rightValueX, top(0.66), data.presType || "-", bodySize);
 
-  drawTopLeft(x(0.03), top(0.50), "Coating:", 6);
-  drawTopLeft(x(0.45), top(0.50), data.coating || "-", 6);
+  drawTopLeft(x(0.03), top(0.58), "Thickness:", bodySize);
+  drawTopLeft(rightValueX, top(0.58), data.thickness || "index lens", bodySize);
 
-  hlineTop(top(0.44), 0.8);
+  drawTopLeft(x(0.03), top(0.50), "Coating:", bodySize);
+  const coatingLines = buildCoatingLines(fonts, data.coating || "-", bodySize, rightMaxWidth, 2);
+  const coatingTop = top(0.50);
+  const coatingGap = bodySize + 1;
+  coatingLines.forEach((line, i) => {
+    drawTopLeft(rightValueX, coatingTop + i * coatingGap, line.text, line.size);
+  });
+
+  hlineTop(top(0.40), 0.8);
 
   // 表格区域
   const colX = [0.16, 0.32, 0.48, 0.64, 0.8].map(x);
-  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTopCenter(colX[i], top(0.37), h, 6));
-  drawTopCenter(x(0.06), top(0.29), "od", 6);
-  drawTopCenter(x(0.06), top(0.21), "os", 6);
+  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTopCenter(colX[i], top(0.35), h, bodySize));
+  drawTopCenter(x(0.06), top(0.27), "od", bodySize);
+  drawTopCenter(x(0.06), top(0.19), "os", bodySize);
 
   const vOD = [data.od.sph, data.od.cyl, data.od.axis, data.od.add, data.od.pd].map((v) => v || "-");
   const vOS = [data.os.sph, data.os.cyl, data.os.axis, data.os.add, data.os.pd].map((v) => v || "-");
 
-  vOD.forEach((v, i) => drawTopCenter(colX[i], top(0.29), v, 6));
-  vOS.forEach((v, i) => drawTopCenter(colX[i], top(0.21), v, 6));
+  vOD.forEach((v, i) => drawTopCenter(colX[i], top(0.27), v, bodySize));
+  vOS.forEach((v, i) => drawTopCenter(colX[i], top(0.19), v, bodySize));
 
-  hlineTop(top(0.15), 0.8);
-  drawTopLeft(x(0.03), top(0.08), data.dateStr || "", 6);
+  hlineTop(top(0.13), 0.8);
+  drawTopLeft(x(0.03), top(0.08), data.dateStr || "", bodySize);
 }
 
 /** =========================
