@@ -27,6 +27,8 @@ const FONT_FILES = {
 const CM_TO_PT = 28.3464566929;
 const PAGE_W = 5 * CM_TO_PT;
 const PAGE_H = 4 * CM_TO_PT;
+const DEFAULT_LABEL_LIMIT = 200;
+const MAX_LABEL_LIMIT = 300;
 
 /** =========================
  * 工具函数
@@ -143,6 +145,30 @@ function isAsciiPrintable(ch: string) {
   const cp = ch.codePointAt(0) || 0;
   return cp >= 0x20 && cp <= 0x7e;
 }
+function isAsciiString(text: string) {
+  for (const ch of text) {
+    if (!isAsciiPrintable(ch)) return false;
+  }
+  return true;
+}
+type FontNeeds = { jp: boolean; kr: boolean; sc: boolean; other: boolean; nonAscii: boolean };
+function scanTextForFonts(text: any, needs: FontNeeds) {
+  if (text === null || text === undefined) return;
+  const s = String(text);
+  for (const ch of s) {
+    if (isAsciiPrintable(ch)) continue;
+    needs.nonAscii = true;
+    if (isHiraganaKatakana(ch)) {
+      needs.jp = true;
+    } else if (isHangul(ch)) {
+      needs.kr = true;
+    } else if (isCJKUnified(ch)) {
+      needs.sc = true;
+    } else {
+      needs.other = true;
+    }
+  }
+}
 
 /**
  * 规则：
@@ -154,10 +180,12 @@ function isAsciiPrintable(ch: string) {
  */
 function pickFontForChar(fonts: any, ch: string) {
   if (isAsciiPrintable(ch)) return fonts.latin;
-  if (isHiraganaKatakana(ch)) return fonts.jp;
-  if (isHangul(ch)) return fonts.kr;
-  if (isCJKUnified(ch)) return fonts.sc; // 想繁中优先就改 fonts.tc
-  return fonts.sc;
+  if (isHiraganaKatakana(ch) && fonts.jp) return fonts.jp;
+  if (isHangul(ch) && fonts.kr) return fonts.kr;
+  if (isCJKUnified(ch) && fonts.sc) return fonts.sc; // 想繁中优先就改 fonts.tc
+  const fallback = fonts.fallback || fonts.sc || fonts.jp || fonts.kr;
+  if (!fallback) throw new Error("Missing embedded font for non-ASCII text");
+  return fallback;
 }
 
 /**
@@ -166,6 +194,10 @@ function pickFontForChar(fonts: any, ch: string) {
  */
 function drawTextRuns(page: any, fonts: any, text: string, x: number, y: number, size: number, color: any) {
   if (!text) return;
+  if (isAsciiString(text)) {
+    page.drawText(text, { x, y, size, font: fonts.latin, color });
+    return;
+  }
   let cursorX = x;
   let buf = "";
   let curFont: any = null;
@@ -202,6 +234,7 @@ function normalizeText(val: any): string {
 
 function measureTextRuns(fonts: any, text: string, size: number) {
   if (!text) return 0;
+  if (isAsciiString(text)) return fonts.latin.widthOfTextAtSize(text, size);
   let width = 0;
   let buf = "";
   let curFont: any = null;
@@ -406,134 +439,233 @@ async function handleAggregate(request: Request) {
 async function handleLabels(request: Request, env: any) {
   const url = new URL(request.url);
   const mode = (url.searchParams.get("mode") || "bundle").toLowerCase(); // bundle | order
-
-  const form = await request.formData();
-  const fileAny = form.get("file");
-  if (!fileAny || typeof fileAny === "string") return new Response("Missing/invalid file field 'file'", { status: 400 });
-  const csvText = await (fileAny as File).text();
-
-  const parsed = Papa.parse<Record<string, any>>(csvText, { header: true, skipEmptyLines: true });
-  if (parsed.errors?.length) return new Response("CSV parse error: " + JSON.stringify(parsed.errors.slice(0, 3)), { status: 400 });
-  const rows = parsed.data || [];
-  if (!rows.length) return new Response("Empty CSV", { status: 400 });
-
-  for (const col of [ORDER_ID, BUNDLE_ID, LINE_ITEM, QTY]) {
-    if (!(col in rows[0])) return new Response(`Missing required column: ${col}`, { status: 400 });
+  const startRaw = url.searchParams.get("start");
+  const limitRaw = url.searchParams.get("limit");
+  const paging = startRaw !== null || limitRaw !== null;
+  let start = startRaw ? Number.parseInt(startRaw, 10) : 0;
+  let limit = limitRaw ? Number.parseInt(limitRaw, 10) : DEFAULT_LABEL_LIMIT;
+  if (!Number.isFinite(start) || start < 0) start = 0;
+  if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LABEL_LIMIT;
+  if (limit > MAX_LABEL_LIMIT) {
+    return new Response(`limit too large (max ${MAX_LABEL_LIMIT})`, { status: 400 });
   }
 
-  // === 创建 PDF & 加载字体（多字体回退） ===
-  const pdf = await PDFDocument.create();
+  const t0 = Date.now();
+  const log = (msg: string) => console.log(`[labels] ${msg} (+${Date.now() - t0}ms)`);
+  let stage = "init";
 
-  // 英文/数字：Helvetica（最稳）
-  const fontLatin = await pdf.embedFont(StandardFonts.Helvetica);
+  try {
+    stage = "parse-form";
+    const form = await request.formData();
+    const fileAny = form.get("file");
+    if (!fileAny || typeof fileAny === "string") return new Response("Missing/invalid file field 'file'", { status: 400 });
+    const csvText = await (fileAny as File).text();
+    log("form parsed");
 
-  // CJK：注册 fontkit 并嵌入多份字体
-  pdf.registerFontkit(fontkit);
+    stage = "parse-csv";
+    const parsed = Papa.parse<Record<string, any>>(csvText, { header: true, skipEmptyLines: true });
+    if (parsed.errors?.length) return new Response("CSV parse error: " + JSON.stringify(parsed.errors.slice(0, 3)), { status: 400 });
+    const rows = parsed.data || [];
+    if (!rows.length) return new Response("Empty CSV", { status: 400 });
 
-  // subset:false 更稳（避免部分字形被裁剪）
-  const [jpBytes, scBytes, tcBytes, krBytes] = await Promise.all([
-    loadFontBytes(env, FONT_FILES.jp),
-    loadFontBytes(env, FONT_FILES.sc),
-    loadFontBytes(env, FONT_FILES.tc),
-    loadFontBytes(env, FONT_FILES.kr),
-  ]);
-
-  const fontJP = await pdf.embedFont(jpBytes, { subset: false });
-  const fontSC = await pdf.embedFont(scBytes, { subset: false });
-  const fontTC = await pdf.embedFont(tcBytes, { subset: false });
-  const fontKR = await pdf.embedFont(krBytes, { subset: false });
-
-  const fonts = { latin: fontLatin, jp: fontJP, sc: fontSC, tc: fontTC, kr: fontKR };
-
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
-  // === 组织 order/bundle ===
-  const orderMap = new Map<string, any>();
-
-  for (const r of rows) {
-    const orderId = r[ORDER_ID];
-    const bundleId = r[BUNDLE_ID];
-
-    if (!orderMap.has(orderId)) orderMap.set(orderId, { orderId, name: "", bundles: new Map<string, any>() });
-    const o = orderMap.get(orderId);
-
-    if (!o.name && String(r["Name"] ?? "").trim() !== "") o.name = String(r["Name"]);
-
-    if (!o.bundles.has(bundleId)) {
-      o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {} });
+    for (const col of [ORDER_ID, BUNDLE_ID, LINE_ITEM, QTY]) {
+      if (!(col in rows[0])) return new Response(`Missing required column: ${col}`, { status: 400 });
     }
-    const b = o.bundles.get(bundleId);
+    log(`csv parsed rows=${rows.length}`);
 
-    const item = r[LINE_ITEM];
-    const qty = Number(r[QTY]) || 1;
-    const display = qty !== 1 ? `${item} x${qty}` : String(item);
-    b.items[categorize(item)].push(display);
+    stage = "scan-text";
+    const needs: FontNeeds = { jp: false, kr: false, sc: false, other: false, nonAscii: false };
 
-    // 尽量收集处方字段（兼容不同列名）
-    const keysToKeep = [
-      "OD_SPH","OD_CYL","OD_AXIS","OD_ADD",
-      "OS_SPH","OS_CYL","OS_AXIS","OS_ADD",
-      "Sphere OD","Cylinder OD","Axis OD","ADD OD","Add OD",
-      "Sphere OS","Cylinder OS","Axis OS","ADD OS","Add OS",
-      "PD_OD","PD_OS","Single PD","PD",
-      "Prescription Type","Prescription","Lens Type"
-    ];
-    for (const k of keysToKeep) {
-      if (!b.rx[k] && String(r[k] ?? "").trim() !== "") b.rx[k] = r[k];
+    // === 组织 order/bundle ===
+    const orderMap = new Map<string, any>();
+
+    for (const r of rows) {
+      const orderId = r[ORDER_ID];
+      const bundleId = r[BUNDLE_ID];
+      scanTextForFonts(orderId, needs);
+      scanTextForFonts(bundleId, needs);
+
+      if (!orderMap.has(orderId)) orderMap.set(orderId, { orderId, name: "", bundles: new Map<string, any>() });
+      const o = orderMap.get(orderId);
+
+      if (!o.name && String(r["Name"] ?? "").trim() !== "") {
+        o.name = String(r["Name"]);
+        scanTextForFonts(o.name, needs);
+      }
+
+      if (!o.bundles.has(bundleId)) {
+        o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {} });
+      }
+      const b = o.bundles.get(bundleId);
+
+      const item = r[LINE_ITEM];
+      const qty = Number(r[QTY]) || 1;
+      const display = qty !== 1 ? `${item} x${qty}` : String(item);
+      b.items[categorize(item)].push(display);
+      scanTextForFonts(item, needs);
+
+      // 尽量收集处方字段（兼容不同列名）
+      const keysToKeep = [
+        "OD_SPH","OD_CYL","OD_AXIS","OD_ADD",
+        "OS_SPH","OS_CYL","OS_AXIS","OS_ADD",
+        "Sphere OD","Cylinder OD","Axis OD","ADD OD","Add OD",
+        "Sphere OS","Cylinder OS","Axis OS","ADD OS","Add OS",
+        "PD_OD","PD_OS","Single PD","PD",
+        "Prescription Type","Prescription","Lens Type"
+      ];
+      for (const k of keysToKeep) {
+        if (!b.rx[k] && String(r[k] ?? "").trim() !== "") {
+          b.rx[k] = r[k];
+          scanTextForFonts(r[k], needs);
+        }
+      }
     }
+
+    const needSC = needs.sc || needs.other;
+    const needJP = needs.jp;
+    const needKR = needs.kr;
+    const needCJK = needs.nonAscii;
+    log(`scan done: nonAscii=${needs.nonAscii} jp=${needJP} sc=${needSC} kr=${needKR}`);
+
+    stage = "count-labels";
+    let totalLabels = 0;
+    for (const [, o] of orderMap) {
+      const bundles = Array.from(o.bundles.values());
+      totalLabels += mode === "order" ? (bundles.length ? 1 : 0) : bundles.length;
+    }
+    if (!paging && totalLabels > DEFAULT_LABEL_LIMIT) {
+      return new Response(
+        `Too many labels (${totalLabels}). Use ?start=0&limit=${DEFAULT_LABEL_LIMIT} to generate in batches (max ${MAX_LABEL_LIMIT}).`,
+        { status: 400 }
+      );
+    }
+    if (start >= totalLabels) {
+      return new Response(`start out of range (start=${start}, total=${totalLabels})`, { status: 400 });
+    }
+    log(`labels total=${totalLabels} start=${start} limit=${limit}`);
+
+    stage = "create-pdf";
+    const pdf = await PDFDocument.create();
+
+    // 英文/数字：Helvetica（最稳）
+    const fontLatin = await pdf.embedFont(StandardFonts.Helvetica);
+
+    let fontJP: any = null;
+    let fontSC: any = null;
+    let fontKR: any = null;
+
+    if (needCJK) {
+      stage = "embed-fonts";
+      pdf.registerFontkit(fontkit);
+      const fontTasks: Promise<void>[] = [];
+
+      if (needJP) {
+        fontTasks.push(
+          loadFontBytes(env, FONT_FILES.jp).then(async (bytes) => {
+            fontJP = await pdf.embedFont(bytes, { subset: true });
+          })
+        );
+      }
+      if (needSC) {
+        fontTasks.push(
+          loadFontBytes(env, FONT_FILES.sc).then(async (bytes) => {
+            fontSC = await pdf.embedFont(bytes, { subset: true });
+          })
+        );
+      }
+      if (needKR) {
+        fontTasks.push(
+          loadFontBytes(env, FONT_FILES.kr).then(async (bytes) => {
+            fontKR = await pdf.embedFont(bytes, { subset: true });
+          })
+        );
+      }
+
+      await Promise.all(fontTasks);
+      log("fonts embedded");
+    }
+
+    const fallback = fontSC || fontJP || fontKR;
+    if (needCJK && !fallback) throw new Error("Non-ASCII detected but no CJK font embedded");
+
+    const fonts = { latin: fontLatin, jp: fontJP, sc: fontSC, kr: fontKR, fallback };
+
+    const today = new Date();
+    const dateStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+    stage = "generate-pages";
+    let generated = 0;
+    let idx = 0;
+    outer: for (const [, o] of orderMap) {
+      const bundles = Array.from(o.bundles.values()).sort((a: any, b: any) => String(a.bundleId).localeCompare(String(b.bundleId)));
+      const targets = mode === "order" ? (bundles.length ? [bundles[0]] : []) : bundles;
+
+      for (const b of targets) {
+        if (idx < start) {
+          idx++;
+          continue;
+        }
+        if (generated >= limit) break outer;
+
+        const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
+        const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
+
+        const idxLens = parseIndexLensFromText(lensText);
+        const thickness = idxLens ? `${idxLens} index lens` : "index lens";
+
+        let coating = "Blue Light Blocking";
+        if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
+
+        const presType = String(pick(b.rx, ["Prescription Type", "Prescription", "Lens Type"])) || "Single Vision";
+
+        const od_sph  = fmtTwoDec(pick(b.rx, ["OD_SPH", "Sphere OD", "OD Sphere"]));
+        const od_cyl  = fmtTwoDec(pick(b.rx, ["OD_CYL", "Cylinder OD", "OD Cylinder"]));
+        const od_axis = fmtAxis(pick(b.rx, ["OD_AXIS", "Axis OD", "OD Axis"]));
+        const od_add  = fmtTwoDec(pick(b.rx, ["OD_ADD", "ADD OD", "Add OD"]));
+
+        const os_sph  = fmtTwoDec(pick(b.rx, ["OS_SPH", "Sphere OS", "OS Sphere"]));
+        const os_cyl  = fmtTwoDec(pick(b.rx, ["OS_CYL", "Cylinder OS", "OS Cylinder"]));
+        const os_axis = fmtAxis(pick(b.rx, ["OS_AXIS", "Axis OS", "OS Axis"]));
+        const os_add  = fmtTwoDec(pick(b.rx, ["OS_ADD", "ADD OS", "Add OS"]));
+
+        const [pd_od, pd_os] = getPD(b.rx);
+
+        const page = pdf.addPage([PAGE_W, PAGE_H]);
+        drawLabel(page, fonts, {
+          backer: mode === "order" ? String(o.orderId) : String(b.bundleId),
+          name: o.name || "-",
+          presType,
+          thickness,
+          coating,
+          od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
+          os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
+          dateStr,
+        });
+
+        generated++;
+        idx++;
+      }
+    }
+    log(`pages generated=${generated}`);
+
+    stage = "save-pdf";
+    const bytes = await pdf.save();
+    log(`pdf saved bytes=${bytes.length}`);
+
+    return new Response(bytes, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": 'attachment; filename="labels_5x4cm.pdf"',
+      },
+    });
+  } catch (e: any) {
+    const msg = e?.stack || e?.message || String(e);
+    return new Response(`Labels error (${stage}):
+${msg}`, {
+      status: 500,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   }
-
-  // === 生成每页 label ===
-  for (const [, o] of orderMap) {
-    const bundles = Array.from(o.bundles.values()).sort((a: any, b: any) => String(a.bundleId).localeCompare(String(b.bundleId)));
-    const targets = mode === "order" ? (bundles.length ? [bundles[0]] : []) : bundles;
-
-    for (const b of targets) {
-      const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
-      const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
-
-      const idx = parseIndexLensFromText(lensText);
-      const thickness = idx ? `${idx} index lens` : "index lens";
-
-      let coating = "Blue Light Blocking";
-      if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
-
-      const presType = String(pick(b.rx, ["Prescription Type", "Prescription", "Lens Type"])) || "Single Vision";
-
-      const od_sph  = fmtTwoDec(pick(b.rx, ["OD_SPH", "Sphere OD", "OD Sphere"]));
-      const od_cyl  = fmtTwoDec(pick(b.rx, ["OD_CYL", "Cylinder OD", "OD Cylinder"]));
-      const od_axis = fmtAxis(pick(b.rx, ["OD_AXIS", "Axis OD", "OD Axis"]));
-      const od_add  = fmtTwoDec(pick(b.rx, ["OD_ADD", "ADD OD", "Add OD"]));
-
-      const os_sph  = fmtTwoDec(pick(b.rx, ["OS_SPH", "Sphere OS", "OS Sphere"]));
-      const os_cyl  = fmtTwoDec(pick(b.rx, ["OS_CYL", "Cylinder OS", "OS Cylinder"]));
-      const os_axis = fmtAxis(pick(b.rx, ["OS_AXIS", "Axis OS", "OS Axis"]));
-      const os_add  = fmtTwoDec(pick(b.rx, ["OS_ADD", "ADD OS", "Add OS"]));
-
-      const [pd_od, pd_os] = getPD(b.rx);
-
-      const page = pdf.addPage([PAGE_W, PAGE_H]);
-      drawLabel(page, fonts, {
-        backer: mode === "order" ? String(o.orderId) : String(b.bundleId),
-        name: o.name || "-",
-        presType,
-        thickness,
-        coating,
-        od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
-        os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
-        dateStr,
-      });
-    }
-  }
-
-  const bytes = await pdf.save();
-  return new Response(bytes, {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": 'attachment; filename="labels_5x4cm.pdf"',
-    },
-  });
 }
 
 /** =========================
