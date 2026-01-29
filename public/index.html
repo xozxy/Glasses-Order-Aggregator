@@ -7,13 +7,13 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen">
-  <div class="max-w-6xl mx-auto px-4 py-10">
+  <div class="max-w-5xl mx-auto px-4 py-10">
     <header class="mb-8">
       <h1 class="text-3xl font-semibold tracking-tight">Glasses Order Tools</h1>
-      <p class="text-slate-600 mt-2">Aggregate orders into a single-row CSV and generate 5×4cm PDF labels.</p>
+      <p class="text-slate-600 mt-2">Aggregate orders and generate 5×4cm PDF labels.</p>
     </header>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="space-y-6">
       <!-- Module A: Aggregate CSV -->
       <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
         <div class="flex items-start justify-between gap-3">
@@ -27,16 +27,19 @@
         <div class="mt-5 space-y-4">
           <div>
             <label class="block text-sm font-medium text-slate-700">Order CSV</label>
-            <input id="aggFile" type="file" accept=".csv" class="mt-2 block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800" />
+            <input id="aggFile" type="file" accept=".csv" class="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <div id="aggFileName" class="mt-2 text-xs text-slate-500">No file selected</div>
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
-            <button id="aggBtn" class="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Generate Aggregated CSV</button>
+            <button id="aggBtn" class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60">
+              <span id="aggBtnSpinner" class="hidden h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
+              <span id="aggBtnText">Generate Aggregated CSV</span>
+            </button>
             <button id="aggPing" class="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Test /health</button>
           </div>
 
-          <div id="aggStatus" class="text-sm text-slate-600"></div>
-          <div id="aggError" class="hidden text-sm text-red-600 whitespace-pre-wrap"></div>
+          <div id="aggAlert" class="hidden rounded-lg border px-3 py-2 text-sm"></div>
         </div>
       </section>
 
@@ -53,32 +56,47 @@
         <div class="mt-5 space-y-4">
           <div>
             <label class="block text-sm font-medium text-slate-700">CSV File</label>
-            <input id="pdfFile" type="file" accept=".csv" class="mt-2 block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800" />
+            <input id="pdfFile" type="file" accept=".csv" class="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <div id="pdfFileName" class="mt-2 text-xs text-slate-500">No file selected</div>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label class="block text-sm font-medium text-slate-700">Mode</label>
-              <select id="pdfMode" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+              <select id="pdfMode" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="bundle" selected>Bundle (per bundle)</option>
                 <option value="order">Order (per order)</option>
               </select>
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-700">Batch Size</label>
-              <select id="pdfBatch" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
-                <option value="100">100</option>
-                <option value="200" selected>200</option>
+              <select id="pdfBatch" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
                 <option value="300">300</option>
               </select>
             </div>
             <div class="flex items-end">
-              <button id="pdfBtn" class="w-full inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Generate PDF Labels</button>
+              <button id="pdfBtn" class="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60">
+                <span id="pdfBtnSpinner" class="hidden h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
+                <span id="pdfBtnText">Generate PDF Labels</span>
+              </button>
             </div>
           </div>
 
-          <div id="pdfStatus" class="text-sm text-slate-600"></div>
-          <div id="pdfError" class="hidden text-sm text-red-600 whitespace-pre-wrap"></div>
+          <div class="space-y-2">
+            <div class="text-sm text-slate-600" id="pdfStatus">Idle</div>
+            <div class="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+              <div id="pdfProgress" class="h-full bg-emerald-500 transition-all" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div id="pdfAlert" class="hidden rounded-lg border px-3 py-2 text-sm"></div>
+          <button id="pdfRetrySmall" class="hidden text-sm text-indigo-600 hover:underline">Retry with smaller batch</button>
+          <details id="pdfDetails" class="hidden text-xs text-slate-600">
+            <summary class="cursor-pointer text-slate-500">Show raw error</summary>
+            <pre id="pdfRaw" class="mt-2 whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-2"></pre>
+          </details>
         </div>
       </section>
     </div>
@@ -87,30 +105,47 @@
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <script>
     const aggFile = document.getElementById('aggFile');
+    const aggFileName = document.getElementById('aggFileName');
     const aggBtn = document.getElementById('aggBtn');
+    const aggBtnSpinner = document.getElementById('aggBtnSpinner');
+    const aggBtnText = document.getElementById('aggBtnText');
     const aggPing = document.getElementById('aggPing');
-    const aggStatus = document.getElementById('aggStatus');
-    const aggError = document.getElementById('aggError');
+    const aggAlert = document.getElementById('aggAlert');
 
     const pdfFile = document.getElementById('pdfFile');
+    const pdfFileName = document.getElementById('pdfFileName');
     const pdfMode = document.getElementById('pdfMode');
     const pdfBatch = document.getElementById('pdfBatch');
     const pdfBtn = document.getElementById('pdfBtn');
+    const pdfBtnSpinner = document.getElementById('pdfBtnSpinner');
+    const pdfBtnText = document.getElementById('pdfBtnText');
     const pdfStatus = document.getElementById('pdfStatus');
-    const pdfError = document.getElementById('pdfError');
+    const pdfProgress = document.getElementById('pdfProgress');
+    const pdfAlert = document.getElementById('pdfAlert');
+    const pdfRetrySmall = document.getElementById('pdfRetrySmall');
+    const pdfDetails = document.getElementById('pdfDetails');
+    const pdfRaw = document.getElementById('pdfRaw');
 
-    function setStatus(el, msg) {
-      el.textContent = msg || '';
-    }
-
-    function setError(el, msg) {
+    function setAlert(el, type, msg) {
       if (!msg) {
         el.classList.add('hidden');
         el.textContent = '';
         return;
       }
-      el.classList.remove('hidden');
+      const colors = {
+        success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        error: 'border-red-200 bg-red-50 text-red-700',
+        info: 'border-slate-200 bg-slate-50 text-slate-700',
+      };
+      el.className = `rounded-lg border px-3 py-2 text-sm ${colors[type] || colors.info}`;
       el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function setLoading(btn, spinner, textEl, loading, text) {
+      btn.disabled = loading;
+      spinner.classList.toggle('hidden', !loading);
+      if (text) textEl.textContent = text;
     }
 
     function downloadBlob(blob, filename) {
@@ -135,30 +170,43 @@
       return fd;
     }
 
+    function summarizeError(status, text) {
+      if (status === 503) return 'HTTP 503. Worker resource limits.';
+      const snippet = String(text || '').slice(0, 160).replace(/\s+/g, ' ').trim();
+      return `HTTP ${status}. ${snippet}`;
+    }
+
+    aggFile.addEventListener('change', () => {
+      const f = aggFile.files?.[0];
+      aggFileName.textContent = f ? f.name : 'No file selected';
+    });
+
+    pdfFile.addEventListener('change', () => {
+      const f = pdfFile.files?.[0];
+      pdfFileName.textContent = f ? f.name : 'No file selected';
+    });
+
     // Module A: Aggregate
     aggPing.addEventListener('click', async () => {
-      setError(aggError, '');
-      setStatus(aggStatus, 'Checking /health...');
+      setAlert(aggAlert, 'info', 'Checking /health...');
       try {
         const res = await fetch('/health');
         if (!res.ok) throw new Error('health not ok');
         const t = await res.text();
-        setStatus(aggStatus, `OK: ${t}`);
+        setAlert(aggAlert, 'success', `OK: ${t}`);
       } catch (e) {
-        setStatus(aggStatus, '');
-        setError(aggError, String(e));
+        setAlert(aggAlert, 'error', String(e));
       }
     });
 
     aggBtn.addEventListener('click', async () => {
-      setError(aggError, '');
       const file = aggFile.files?.[0];
+      setAlert(aggAlert, '', '');
       if (!file) {
-        setStatus(aggStatus, '');
-        setError(aggError, 'Please choose a CSV file.');
+        setAlert(aggAlert, 'error', 'Please choose a CSV file.');
         return;
       }
-      setStatus(aggStatus, 'Generating aggregated CSV...');
+      setLoading(aggBtn, aggBtnSpinner, aggBtnText, true, 'Processing...');
       try {
         const res = await fetch('/api/aggregate', { method: 'POST', body: makeFormData(file) });
         if (!res.ok) {
@@ -167,75 +215,159 @@
         }
         const blob = await res.blob();
         downloadBlob(blob, 'orders_one_row.csv');
-        setStatus(aggStatus, 'Done. Download started.');
+        setAlert(aggAlert, 'success', 'Done. Download started.');
       } catch (e) {
-        setStatus(aggStatus, '');
-        setError(aggError, String(e));
+        setAlert(aggAlert, 'error', String(e));
+      } finally {
+        setLoading(aggBtn, aggBtnSpinner, aggBtnText, false, 'Generate Aggregated CSV');
       }
     });
 
     // Module B: PDF Labels
+    function parseTotalFromStartOutOfRange(text) {
+      const m = String(text || '').match(/start out of range \(start=\d+, total=(\d+)\)/i);
+      return m ? Number(m[1]) : null;
+    }
+
+    async function fetchTotalCount(file, mode) {
+      const probeStart = 99999999;
+      const res = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${probeStart}&limit=1`, { method: 'POST', body: makeFormData(file) });
+      if (res.ok) {
+        return { total: null, okBlob: await res.blob() };
+      }
+      const text = await res.text();
+      const total = parseTotalFromError(text) || parseTotalFromStartOutOfRange(text);
+      if (total !== null && Number.isFinite(total)) {
+        return { total, okBlob: null };
+      }
+      const err = new Error(summarizeError(res.status, text));
+      err.raw = text;
+      err.status = res.status;
+      throw err;
+    }
+
+    async function generatePdfWithBatch(file, mode, batchSize) {
+      if (!window.PDFLib || !window.PDFLib.PDFDocument) {
+        throw new Error('pdf-lib is not loaded.');
+      }
+      const { PDFDocument } = window.PDFLib;
+
+      const countInfo = await fetchTotalCount(file, mode);
+      if (countInfo.okBlob) {
+        downloadBlob(countInfo.okBlob, 'labels_5x4cm.pdf');
+        return { total: null };
+      }
+
+      const total = countInfo.total || 0;
+      if (total <= 0) {
+        throw new Error('No labels to generate.');
+      }
+
+      const merged = await PDFDocument.create();
+      let done = 0;
+
+      for (let start = 0; start < total; start += batchSize) {
+        const limit = Math.min(batchSize, total - start);
+        pdfStatus.textContent = `Generating ${Math.min(start + limit, total)}/${total}...`;
+        pdfProgress.style.width = `${Math.round((Math.min(start + limit, total) / total) * 100)}%`;
+
+        const batchRes = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${start}&limit=${limit}`, { method: 'POST', body: makeFormData(file) });
+        if (!batchRes.ok) {
+          const t = await batchRes.text();
+          const err = new Error(summarizeError(batchRes.status, t));
+          err.raw = t;
+          err.status = batchRes.status;
+          throw err;
+        }
+        const ab = await batchRes.arrayBuffer();
+        const src = await PDFDocument.load(ab);
+        const pages = await merged.copyPages(src, src.getPageIndices());
+        pages.forEach((p) => merged.addPage(p));
+        done = Math.min(start + limit, total);
+        pdfStatus.textContent = `Merging ${done}/${total}...`;
+        pdfProgress.style.width = `${Math.round((done / total) * 100)}%`;
+      }
+
+      pdfStatus.textContent = 'Finalizing PDF...';
+      const mergedBytes = await merged.save();
+      const mergedBlob = new Blob([mergedBytes], { type: 'application/pdf' });
+      downloadBlob(mergedBlob, 'labels_5x4cm.pdf');
+      return { total };
+    }
+
+    function resetPdfUi() {
+      pdfProgress.style.width = '0%';
+      pdfStatus.textContent = 'Idle';
+      setAlert(pdfAlert, '', '');
+      pdfDetails.classList.add('hidden');
+      pdfRaw.textContent = '';
+      pdfRetrySmall.classList.add('hidden');
+    }
+
     pdfBtn.addEventListener('click', async () => {
-      setError(pdfError, '');
       const file = pdfFile.files?.[0];
+      resetPdfUi();
       if (!file) {
-        setStatus(pdfStatus, '');
-        setError(pdfError, 'Please choose a CSV file.');
+        setAlert(pdfAlert, 'error', 'Please choose a CSV file.');
         return;
       }
 
-      const mode = pdfMode.value;
-      const batchSize = Number(pdfBatch.value) || 200;
+      let mode = pdfMode.value;
+      let batchSize = Number(pdfBatch.value) || 100;
+      const retrySizes = [Math.floor(batchSize / 2), 50].filter((n) => n >= 50);
 
-      setStatus(pdfStatus, 'Generating PDF...');
+      setLoading(pdfBtn, pdfBtnSpinner, pdfBtnText, true, 'Processing...');
+      pdfStatus.textContent = 'Starting...';
+
       try {
-        // Try single request first
-        const res = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}`, { method: 'POST', body: makeFormData(file) });
-        if (res.ok) {
-          const blob = await res.blob();
-          downloadBlob(blob, 'labels_5x4cm.pdf');
-          setStatus(pdfStatus, 'Done. Download started.');
-          return;
-        }
-
-        const errText = await res.text();
-        const total = parseTotalFromError(errText);
-        if (!total) {
-          throw new Error(`HTTP ${res.status}\n\n${errText}`);
-        }
-
-        if (!window.PDFLib || !window.PDFLib.PDFDocument) {
-          throw new Error('pdf-lib is not loaded.');
-        }
-
-        const { PDFDocument } = window.PDFLib;
-        const merged = await PDFDocument.create();
-        let done = 0;
-
-        for (let start = 0; start < total; start += batchSize) {
-          const limit = Math.min(batchSize, total - start);
-          setStatus(pdfStatus, `Generating ${Math.min(start + limit, total)}/${total}...`);
-          const batchRes = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${start}&limit=${limit}`, { method: 'POST', body: makeFormData(file) });
-          if (!batchRes.ok) {
-            const t = await batchRes.text();
-            throw new Error(`Batch failed start=${start} limit=${limit}\nHTTP ${batchRes.status}\n\n${t}`);
-          }
-          const ab = await batchRes.arrayBuffer();
-          const src = await PDFDocument.load(ab);
-          const pages = await merged.copyPages(src, src.getPageIndices());
-          pages.forEach((p) => merged.addPage(p));
-          done = Math.min(start + limit, total);
-          setStatus(pdfStatus, `Merging ${done}/${total}...`);
-        }
-
-        setStatus(pdfStatus, 'Finalizing PDF...');
-        const mergedBytes = await merged.save();
-        const mergedBlob = new Blob([mergedBytes], { type: 'application/pdf' });
-        downloadBlob(mergedBlob, 'labels_5x4cm.pdf');
-        setStatus(pdfStatus, 'Done. Download started.');
+        await generatePdfWithBatch(file, mode, batchSize);
+        setAlert(pdfAlert, 'success', 'Done. Download started.');
       } catch (e) {
-        setStatus(pdfStatus, '');
-        setError(pdfError, String(e));
+        const status = e?.status || 0;
+        const raw = e?.raw || '';
+
+        if (status === 503 && retrySizes.length) {
+          const nextSize = retrySizes.shift();
+          pdfStatus.textContent = `Retrying with smaller batch (${nextSize})...`;
+          try {
+            await generatePdfWithBatch(file, mode, nextSize);
+            setAlert(pdfAlert, 'success', 'Done. Download started.');
+            return;
+          } catch (err) {
+            setAlert(pdfAlert, 'error', `Failed: ${err.message || err}`);
+            if (err?.raw) {
+              pdfDetails.classList.remove('hidden');
+              pdfRaw.textContent = err.raw;
+            }
+            if ((err?.status || 0) === 503 && retrySizes.length) {
+              pdfRetrySmall.classList.remove('hidden');
+              pdfRetrySmall.onclick = async () => {
+                pdfRetrySmall.classList.add('hidden');
+                const smaller = retrySizes.shift();
+                pdfStatus.textContent = `Retrying with smaller batch (${smaller})...`;
+                try {
+                  await generatePdfWithBatch(file, mode, smaller);
+                  setAlert(pdfAlert, 'success', 'Done. Download started.');
+                } catch (err2) {
+                  setAlert(pdfAlert, 'error', `Failed: ${err2.message || err2}`);
+                  if (err2?.raw) {
+                    pdfDetails.classList.remove('hidden');
+                    pdfRaw.textContent = err2.raw;
+                  }
+                }
+              };
+            }
+            return;
+          }
+        }
+
+        setAlert(pdfAlert, 'error', `Failed: ${e.message || e}`);
+        if (raw) {
+          pdfDetails.classList.remove('hidden');
+          pdfRaw.textContent = raw;
+        }
+      } finally {
+        setLoading(pdfBtn, pdfBtnSpinner, pdfBtnText, false, 'Generate PDF Labels');
       }
     });
   </script>
