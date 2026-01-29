@@ -1,147 +1,151 @@
 # Glasses Order Aggregator & Label Generator
 
-用于将眼镜订单明细 CSV 聚合为“一单一行”并生成 5×4cm PDF 标签的 Cloudflare Workers + Pages 项目。
+A Cloudflare Workers + Pages project that aggregates glasses order CSVs into a single-row-per-order export and generates 5×4cm PDF labels.
 
-## 功能
+## Features
 
-- `/api/aggregate`：上传订单明细 CSV，输出“一单一行”聚合 CSV
-- `/api/labels`：上传 CSV（原始明细或聚合表），生成 5×4cm PDF label
-- 前端页面：一键上传并下载 CSV/PDF，自动分批生成并合并 PDF
+- `/api/aggregate`: upload order-line CSV and export a one-row-per-order CSV
+- `/api/labels`: upload CSV (raw or aggregated) and generate 5×4cm PDF labels
+- Web UI: one-click upload/download for CSV/PDF, with automatic batch generation + merge
 
-## 技术栈
+## Tech Stack
 
 - Cloudflare Workers + Assets
-- pdf-lib + fontkit（多语言字体）
-- PapaParse（CSV 解析）
+- pdf-lib + fontkit (multilingual fonts)
+- PapaParse (CSV parsing)
 
-## 本地开发
+## Local Development
 
 ```bash
 npm i
 npx wrangler dev
 ```
 
-打开浏览器访问 `http://127.0.0.1:8787`。
+Open `http://127.0.0.1:8787`.
 
-## 接口说明
+## Endpoints
 
 ### 1) POST `/api/aggregate`
 
-上传原始订单明细 CSV（每个产品一行）并输出聚合 CSV。
+Upload the raw order-line CSV (one product per row) and get an aggregated CSV.
 
-请求：
+Request:
 
-- `multipart/form-data`，字段名：`file`
-- Query：`format=csv`（当前仅支持 CSV）
+- `multipart/form-data`, field name: `file`
+- Query: `format=csv` (CSV only for now)
+- Optional:
+  - `drop=default` (default): drop predefined columns
+  - `drop=none`: keep all columns
+  - `drop=custom&drop_cols=col1,col2`: add extra columns to drop
 
-响应：
+Response:
 
-- `text/csv` 文件下载
+- `text/csv` download
 
 ### 2) POST `/api/labels`
 
-根据 CSV 生成 5×4cm PDF label，每条记录一页。
+Generate 5×4cm PDF labels (one page per record).
 
-请求：
+Request:
 
-- `multipart/form-data`，字段名：`file`
-- Query：
-  - `mode=bundle`（默认）：每个 Bundle 一张标签
-  - `mode=order`：每个订单一张（聚合表读取 Bundle 1）
-  - `start` / `limit`：分页输出，避免 Worker 资源超限（默认 200，最大 300）
+- `multipart/form-data`, field name: `file`
+- Query:
+  - `mode=bundle` (default): one label per bundle
+  - `mode=order`: one label per order (aggregated CSV reads Bundle 1)
+  - `start` / `limit`: pagination to avoid Worker limits (default 200, max 300)
 
-响应：
+Response:
 
-- `application/pdf` 文件下载
+- `application/pdf` download
 
-## CSV 兼容与字段映射
+## CSV Compatibility & Field Mapping
 
-### A) 原始明细表（每行一个产品）
+### A) Raw detail CSV (one product per row)
 
-必须包含：
+Required:
 
 - `Order ID`
 - `Bundle ID`
 - `Line Item`
 - `Quantity`
 
-处方字段（优先级从高到低）：
+Prescription fields (priority order):
 
-- OD：`OD SPH` / `OD CYL` / `OD Axis` / `OD ADD`
-- OS：`OS SPH` / `OS CYL` / `OS Axis` / `OS ADD`
-- PD：`PD OD` / `PD OS`
-- 处方类型：`Prescription Type`
-- 兼容 fallback：`OD_SPH`/`OS_SPH` 等下划线版本
+- OD: `OD SPH` / `OD CYL` / `OD Axis` / `OD ADD`
+- OS: `OS SPH` / `OS CYL` / `OS Axis` / `OS ADD`
+- PD: `PD OD` / `PD OS`
+- Prescription type: `Prescription Type`
+- Fallbacks: `OD_SPH` / `OS_SPH` underscore variants
 
-### B) 聚合表（orders_one_row.csv）
+### B) Aggregated CSV (`orders_one_row.csv`)
 
-处方字段格式：
+Prescription fields:
 
 - `OD SPH (Bundle 1)` / `OD CYL (Bundle 1)` / `OD Axis (Bundle 1)` / `OD ADD (Bundle 1)`
 - `OS SPH (Bundle 1)` / `OS CYL (Bundle 1)` / `OS Axis (Bundle 1)` / `OS ADD (Bundle 1)`
 - `PD OD (Bundle 1)` / `PD OS (Bundle 1)`
 - `Prescription Type (Bundle 1)`
 
-**模式规则：**
+Mode rules:
 
-- `mode=order`：仅读取 Bundle 1
-- `mode=bundle`：循环所有 Bundle（根据 `Bundle Count` 或列名推断）
+- `mode=order`: only reads Bundle 1
+- `mode=bundle`: iterates all bundles (from `Bundle Count` or columns)
 
-如果聚合表缺少 Bundle 列会返回 400 并提示。
+If bundle columns are missing, the API returns 400 with a message.
 
-## PDF 生成逻辑（关键点）
+## PDF Generation Notes
 
-- Helvetica 仅用于 ASCII；非 ASCII 必须用嵌入字体
-- 按需加载字体（JP/SC/KR），减少资源消耗
-- `subset:true` 缩小字体体积
-- label 超过 200 页会建议分批生成（前端已自动处理）
+- Helvetica is ASCII-only; any non-ASCII uses embedded Noto fonts
+- Fonts are loaded on demand (JP/SC/KR) to reduce resource usage
+- `subset:true` for smaller font payloads
+- Over 200 pages will suggest batching (front-end auto-handles)
 
-## 前端批量合并
+## Front-End Batch Merge
 
-页面按钮“生成并下载 PDF”支持：
+The “Generate & Download PDF” button:
 
-1. 先尝试直接生成
-2. 超过上限自动分批请求 `/api/labels?start=&limit=`
-3. 浏览器端使用 `pdf-lib` 合并并下载单个 PDF
+1. Tries a single `/api/labels` request
+2. If over the limit, batches `/api/labels?start=&limit=`
+3. Merges PDFs in-browser via `pdf-lib` and downloads a single file
 
-## 字体文件
+## Fonts
 
-放在 `public/fonts/`：
+Place fonts in `public/fonts/`:
 
 - `NotoSansJP.ttf`
 - `NotoSansSC.ttf`
-- `NotoSansTC.ttf`（备用）
+- `NotoSansTC.ttf` (fallback)
 - `NotoSansKR.ttf`
 
-Worker 通过 `env.ASSETS.fetch("http://local/fonts/xxx")` 读取。
+Workers read fonts via `env.ASSETS.fetch("http://local/fonts/xxx")`.
 
-## 最小自测
+## Quick Tests
 
-1) 原始明细 CSV  
+1) Raw detail CSV  
 ```
 curl -F "file=@/path/to/lensadvizor-orders.csv" \
   "http://127.0.0.1:8787/api/labels?mode=bundle" \
   -o labels_5x4cm.pdf
 ```
 
-2) 聚合 CSV  
+2) Aggregated CSV  
 ```
 curl -F "file=@/path/to/orders_one_row.csv" \
   "http://127.0.0.1:8787/api/labels?mode=order" \
   -o labels_5x4cm.pdf
 ```
 
-3) 生成聚合 CSV  
+3) Generate aggregated CSV  
 ```
 curl -F "file=@/path/to/lensadvizor-orders.csv" \
   "http://127.0.0.1:8787/api/aggregate" \
   -o orders_one_row.csv
 ```
 
-## 常见问题
+## FAQ
 
-**Q: PDF 里全部是 0.00 / 0？**  
-A: 字段名不匹配导致读空值，现在已按真实字段名优先读取并避免空值变 0。
+**Q: Why did all values show as 0.00 / 0?**  
+A: Field name mismatches produced empty strings, which previously converted to 0. Now real column names are prioritized and empty values stay empty.
 
-**Q: 标签太多导致 503？**  
-A: 使用分页生成（`start`/`limit`），前端已自动分批合并。
+**Q: Too many labels causes 503?**  
+A: Use pagination with `start`/`limit`. The UI auto-batches and merges.
