@@ -59,6 +59,11 @@
           <option value="bundle" selected>按 Bundle 生成（每副眼镜一张标签）</option>
           <option value="order">按订单生成（每单一张标签）</option>
         </select>
+        <select id="batchPdf">
+          <option value="100">批量 100/次</option>
+          <option value="200" selected>批量 200/次</option>
+          <option value="300">批量 300/次</option>
+        </select>
         <button id="btnPdf">生成并下载 PDF</button>
       </div>
       <div class="hint">
@@ -70,6 +75,7 @@
 
   </div>
 
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script>
 const fileEl = document.getElementById('file');
 
@@ -116,6 +122,17 @@ async function downloadFromEndpoint(url, file, defaultName){
   URL.revokeObjectURL(objUrl);
 }
 
+function parseTotalFromError(text){
+  const m = String(text || "").match(/Too many labels \((\d+)\)/i);
+  return m ? Number(m[1]) : null;
+}
+
+function makeFormData(file){
+  const fd = new FormData();
+  fd.append("file", file);
+  return fd;
+}
+
 // 测试连接
 document.getElementById("btnPing").addEventListener("click", async () => {
   try{
@@ -151,11 +168,71 @@ document.getElementById('btnPdf').addEventListener('click', async () => {
   if(!f){ setStatus(statusPdf, logPdf, "请先选择 CSV 文件"); return; }
 
   const mode = document.getElementById("modePdf").value;
+  const batchSize = Number(document.getElementById("batchPdf").value) || 200;
 
   setStatus(statusPdf, logPdf, "生成 PDF 中...");
   try{
-    await downloadFromEndpoint(`/api/labels?mode=${encodeURIComponent(mode)}`, f, "labels_5x4cm.pdf");
-    setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
+    // Try single request first
+    try{
+      const res = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}`, { method: "POST", body: makeFormData(f) });
+      if(res.ok){
+        const blob = await res.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = "labels_5x4cm.pdf";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objUrl);
+        setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
+        return;
+      }
+      const errText = await res.text();
+      const total = parseTotalFromError(errText);
+      if(!total){
+        throw new Error(`HTTP ${res.status}\n\n${errText}`);
+      }
+
+      if(!window.PDFLib || !window.PDFLib.PDFDocument){
+        throw new Error("pdf-lib 未加载，无法合并 PDF");
+      }
+
+      const { PDFDocument } = window.PDFLib;
+      const merged = await PDFDocument.create();
+      let done = 0;
+
+      for(let start = 0; start < total; start += batchSize){
+        const limit = Math.min(batchSize, total - start);
+        setStatus(statusPdf, logPdf, `正在生成 ${Math.min(start + limit, total)}/${total}…`);
+        const batchRes = await fetch(`/api/labels?mode=${encodeURIComponent(mode)}&start=${start}&limit=${limit}`, { method: "POST", body: makeFormData(f) });
+        if(!batchRes.ok){
+          const t = await batchRes.text();
+          throw new Error(`批次失败 start=${start} limit=${limit}\nHTTP ${batchRes.status}\n\n${t}`);
+        }
+        const ab = await batchRes.arrayBuffer();
+        const src = await PDFDocument.load(ab);
+        const pages = await merged.copyPages(src, src.getPageIndices());
+        pages.forEach(p => merged.addPage(p));
+        done = Math.min(start + limit, total);
+        setStatus(statusPdf, logPdf, `合并中 ${done}/${total}…`);
+      }
+
+      setStatus(statusPdf, logPdf, "写入最终 PDF...");
+      const mergedBytes = await merged.save();
+      const mergedBlob = new Blob([mergedBytes], { type: "application/pdf" });
+      const objUrl = URL.createObjectURL(mergedBlob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = "labels_5x4cm.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+      setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
+    }catch(e){
+      throw e;
+    }
   }catch(e){
     setStatus(statusPdf, logPdf, "生成失败", true, String(e));
   }
