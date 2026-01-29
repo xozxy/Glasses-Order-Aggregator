@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>订单聚合工具（按订单号一行）</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:900px;margin:40px auto;padding:0 16px}
+    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:16px 0}
+    button{padding:10px 14px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .muted{color:#6b7280;font-size:14px}
+    pre{background:#0b1020;color:#e5e7eb;padding:12px;border-radius:10px;overflow:auto}
+  </style>
+</head>
+<body>
+  <h1>眼镜订单明细 → 按订单号聚合（一单一行）</h1>
+  <p class="muted">上传 CSV（每个产品一行），自动聚合为“一个订单号一行”，并保留多副眼镜（Bundle 1/2/3...）。</p>
+
+  <div class="card">
+    <div class="row">
+      <input id="file" type="file" accept=".csv" />
+      <select id="format">
+        <option value="csv" selected>导出 CSV</option>
+        <option value="xlsx">导出 Excel（xlsx）</option>
+      </select>
+      <button id="run">开始处理并下载</button>
+    </div>
+    <p id="status" class="muted"></p>
+    <pre id="log" style="display:none"></pre>
+  </div>
+
+<script>
+const fileEl = document.getElementById('file');
+const formatEl = document.getElementById('format');
+const btn = document.getElementById('run');
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+
+function setStatus(msg, isError=false){
+  statusEl.textContent = msg;
+  logEl.style.display = isError ? 'block' : 'none';
+}
+
+btn.addEventListener('click', async () => {
+  const f = fileEl.files?.[0];
+  if(!f){ setStatus('请先选择 CSV 文件'); return; }
+
+  btn.disabled = true;
+  setStatus('处理中...');
+
+  try{
+    const fd = new FormData();
+    fd.append('file', f);
+
+    const format = formatEl.value;
+    const res = await fetch(`/api/aggregate?format=${encodeURIComponent(format)}`, {
+      method: 'POST',
+      body: fd
+    });
+
+    if(!res.ok){
+      const text = await res.text();
+      logEl.textContent = text;
+      setStatus(`处理失败（HTTP ${res.status}）`, true);
+      return;
+    }
+
+    // 让浏览器下载
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') || '';
+    const filenameMatch = cd.match(/filename="([^"]+)"/i);
+    const filename = filenameMatch ? filenameMatch[1] : (format === 'xlsx' ? 'orders_one_row.xlsx' : 'orders_one_row.csv');
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    setStatus('完成：已开始下载');
+  } catch(e){
+    logEl.textContent = String(e);
+    setStatus('发生错误（见日志）', true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
