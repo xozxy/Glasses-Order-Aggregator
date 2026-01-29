@@ -3,91 +3,161 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>订单聚合工具（按订单号一行）</title>
+  <title>眼镜订单工具</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:900px;margin:40px auto;padding:0 16px}
-    .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:16px 0}
-    button{padding:10px 14px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;cursor:pointer}
-    button:disabled{opacity:.5;cursor:not-allowed}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:980px;margin:40px auto;padding:0 16px;color:#111827}
+    h1{font-size:32px;margin:0 0 10px}
+    .muted{color:#6b7280;font-size:14px;margin:0 0 20px}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px}
+    .card{border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#fff}
     .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    .muted{color:#6b7280;font-size:14px}
-    pre{background:#0b1020;color:#e5e7eb;padding:12px;border-radius:10px;overflow:auto}
+    button{padding:10px 14px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;cursor:pointer}
+    button.secondary{background:#fff;color:#111827}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    select,input[type="file"]{padding:8px;border-radius:10px;border:1px solid #e5e7eb}
+    pre{background:#0b1020;color:#e5e7eb;padding:12px;border-radius:10px;overflow:auto;margin-top:10px;display:none}
+    .title{font-weight:700;margin:0 0 10px}
+    .hint{font-size:13px;color:#6b7280;margin-top:6px}
   </style>
 </head>
 <body>
   <h1>眼镜订单明细 → 按订单号聚合（一单一行）</h1>
   <p class="muted">上传 CSV（每个产品一行），自动聚合为“一个订单号一行”，并保留多副眼镜（Bundle 1/2/3...）。</p>
 
-  <div class="card">
-    <div class="row">
-      <input id="file" type="file" accept=".csv" />
-      <select id="format">
-        <option value="csv" selected>导出 CSV</option>
-        <option value="xlsx">导出 Excel（xlsx）</option>
-      </select>
-      <button id="run">开始处理并下载</button>
+  <div class="grid">
+
+    <!-- 公共：选择文件 -->
+    <div class="card">
+      <div class="title">1) 选择 CSV 文件</div>
+      <div class="row">
+        <input id="file" type="file" accept=".csv" />
+        <button id="btnPing" class="secondary">测试连接</button>
+      </div>
+      <div id="statusGlobal" class="hint"></div>
+      <pre id="logGlobal"></pre>
     </div>
-    <p id="status" class="muted"></p>
-    <pre id="log" style="display:none"></pre>
+
+    <!-- 聚合导出 -->
+    <div class="card">
+      <div class="title">2) 导出聚合结果（订单一行）</div>
+      <div class="row">
+        <select id="formatAgg">
+          <option value="csv" selected>导出 CSV</option>
+          <option value="xlsx">导出 Excel（暂未启用，可后续加）</option>
+        </select>
+        <button id="btnAgg">开始处理并下载</button>
+      </div>
+      <div id="statusAgg" class="hint"></div>
+      <pre id="logAgg"></pre>
+    </div>
+
+    <!-- PDF Label -->
+    <div class="card">
+      <div class="title">3) 生成 PDF Label（5×4cm）</div>
+      <div class="row">
+        <select id="modePdf">
+          <option value="bundle" selected>按 Bundle 生成（每副眼镜一张标签）</option>
+          <option value="order">按订单生成（每单一张标签）</option>
+        </select>
+        <button id="btnPdf">生成并下载 PDF</button>
+      </div>
+      <div class="hint">
+        说明：默认会从你上传的“订单明细 CSV”里读取姓名、镜片、镀膜、以及 OD/OS/PD 等字段（若字段不存在会留空/用“-”占位）。
+      </div>
+      <div id="statusPdf" class="hint"></div>
+      <pre id="logPdf"></pre>
+    </div>
+
   </div>
 
 <script>
 const fileEl = document.getElementById('file');
-const formatEl = document.getElementById('format');
-const btn = document.getElementById('run');
-const statusEl = document.getElementById('status');
-const logEl = document.getElementById('log');
 
-function setStatus(msg, isError=false){
-  statusEl.textContent = msg;
-  logEl.style.display = isError ? 'block' : 'none';
+const statusGlobal = document.getElementById('statusGlobal');
+const logGlobal = document.getElementById('logGlobal');
+const statusAgg = document.getElementById('statusAgg');
+const logAgg = document.getElementById('logAgg');
+const statusPdf = document.getElementById('statusPdf');
+const logPdf = document.getElementById('logPdf');
+
+function setStatus(statusEl, logEl, msg, isError=false, logText=""){
+  statusEl.textContent = msg || "";
+  if(isError){
+    logEl.style.display = "block";
+    logEl.textContent = logText || "";
+  }else{
+    logEl.style.display = "none";
+    logEl.textContent = "";
+  }
 }
 
-btn.addEventListener('click', async () => {
-  const f = fileEl.files?.[0];
-  if(!f){ setStatus('请先选择 CSV 文件'); return; }
+async function downloadFromEndpoint(url, file, defaultName){
+  const fd = new FormData();
+  fd.append("file", file);
 
-  btn.disabled = true;
-  setStatus('处理中...');
+  const res = await fetch(url, { method: "POST", body: fd });
+  if(!res.ok){
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}\n\n${text}`);
+  }
 
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") || "";
+  const match = cd.match(/filename="([^"]+)"/i);
+  const filename = match ? match[1] : defaultName;
+
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objUrl);
+}
+
+// 测试连接
+document.getElementById("btnPing").addEventListener("click", async () => {
   try{
-    const fd = new FormData();
-    fd.append('file', f);
+    setStatus(statusGlobal, logGlobal, "检测中...");
+    const res = await fetch("/health");
+    if(!res.ok) throw new Error("health not ok");
+    const t = await res.text();
+    setStatus(statusGlobal, logGlobal, `OK: ${t}`);
+  }catch(e){
+    setStatus(statusGlobal, logGlobal, "失败", true, String(e));
+  }
+});
 
-    const format = formatEl.value;
-    const res = await fetch(`/api/aggregate?format=${encodeURIComponent(format)}`, {
-      method: 'POST',
-      body: fd
-    });
+// 聚合
+document.getElementById('btnAgg').addEventListener('click', async () => {
+  const f = fileEl.files?.[0];
+  if(!f){ setStatus(statusAgg, logAgg, "请先选择 CSV 文件"); return; }
 
-    if(!res.ok){
-      const text = await res.text();
-      logEl.textContent = text;
-      setStatus(`处理失败（HTTP ${res.status}）`, true);
-      return;
-    }
+  const format = document.getElementById("formatAgg").value;
 
-    // 让浏览器下载
-    const blob = await res.blob();
-    const cd = res.headers.get('content-disposition') || '';
-    const filenameMatch = cd.match(/filename="([^"]+)"/i);
-    const filename = filenameMatch ? filenameMatch[1] : (format === 'xlsx' ? 'orders_one_row.xlsx' : 'orders_one_row.csv');
+  setStatus(statusAgg, logAgg, "处理中...");
+  try{
+    await downloadFromEndpoint(`/api/aggregate?format=${encodeURIComponent(format)}`, f, "orders_one_row.csv");
+    setStatus(statusAgg, logAgg, "完成：已开始下载");
+  }catch(e){
+    setStatus(statusAgg, logAgg, "处理失败", true, String(e));
+  }
+});
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+// PDF
+document.getElementById('btnPdf').addEventListener('click', async () => {
+  const f = fileEl.files?.[0];
+  if(!f){ setStatus(statusPdf, logPdf, "请先选择 CSV 文件"); return; }
 
-    setStatus('完成：已开始下载');
-  } catch(e){
-    logEl.textContent = String(e);
-    setStatus('发生错误（见日志）', true);
-  } finally {
-    btn.disabled = false;
+  const mode = document.getElementById("modePdf").value;
+
+  setStatus(statusPdf, logPdf, "生成 PDF 中...");
+  try{
+    await downloadFromEndpoint(`/api/labels?mode=${encodeURIComponent(mode)}`, f, "labels_5x4cm.pdf");
+    setStatus(statusPdf, logPdf, "完成：已开始下载 PDF");
+  }catch(e){
+    setStatus(statusPdf, logPdf, "生成失败", true, String(e));
   }
 });
 </script>
