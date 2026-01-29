@@ -31,7 +31,6 @@ const DEFAULT_LABEL_LIMIT = 200;
 const MAX_LABEL_LIMIT = 300;
 const AGGREGATE_DROP_DEFAULT = new Set([
   "Shopify Order ID",
-  "Name",
   "Email",
   "Fulfilled at",
   "Currency",
@@ -496,10 +495,10 @@ function drawLabel(page: any, fonts: any, data: {
   };
 
   // 顶部两行
-  drawTopLeft(x(0.03), top(0.92), `Backer Number: ${data.backer || ""}`, titleSize);
-  drawTopLeft(x(0.03), top(0.80), `Name: ${data.name || ""}`, titleSize);
+  drawTopLeft(x(0.03), top(0.92), `Order Number: ${data.backer || ""}`, titleSize);
+  drawTopLeft(x(0.03), top(0.85), `Name: ${data.name || ""}`, titleSize);
 
-  hlineTop(top(0.74), 1);
+  hlineTop(top(0.72), 1);
 
   // Prescription / Thickness / Coating
   const rightValueX = x(0.45);
