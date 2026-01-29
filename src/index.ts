@@ -51,9 +51,19 @@ const AGGREGATE_DROP_DEFAULT = new Set([
   "Store",
   "Upload URL",
   "Commission charge",
-  "Segment Height",
-  "Ocular Height",
-  "Prism",
+  "Segment Height OD",
+  "Segment Height OS",
+  "Ocular Height OD",
+  "Ocular Height OS",
+  "Prism OD Horizontal",
+  "Prism OD Horizontal Base Direction",
+  "Prism OD Vertical",
+  "Prism OD Vertical Base Direction",
+  "Prism OS Horizontal",
+  "Prism OS Horizontal Base Direction",
+  "Prism OS Vertical",
+  "Prism OS Vertical Base Direction",
+  "Lens Notes",
 ]);
 
 /** =========================
