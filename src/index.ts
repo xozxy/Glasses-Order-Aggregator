@@ -82,11 +82,64 @@ function uniqPreserveOrder(arr: any[]) {
   return out;
 }
 
-function categorize(item: any) {
-  const s = String(item ?? "").toLowerCase();
-  if (s.includes("coating")) return "Coating";
-  if (s.includes("index lens") || s.includes("prescription lens") || /\blens\b/i.test(s)) return "Lens";
-  if (s.includes("frame") || s.includes("glasses style")) return "Frame";
+function containsAny(text: string, patterns: RegExp[]) {
+  return patterns.some((re) => re.test(text));
+}
+
+function categorize(item: any, row?: Record<string, any>) {
+  const lineText = String(item ?? "").toLowerCase();
+  const structuredText = [
+    row?.["Product Type"],
+    row?.["Line Item Type"],
+    row?.["Item Type"],
+    row?.["Type"],
+    row?.["Category"],
+  ]
+    .map((v) => String(v ?? "").toLowerCase().trim())
+    .filter(Boolean)
+    .join(" ");
+
+  const text = `${structuredText} ${lineText}`.trim();
+
+  if (
+    containsAny(text, [
+      /\bcoating\b/i,
+      /blue\s*light/i,
+      /anti[-\s]?uv/i,
+      /\buv\b/i,
+      /\bblocking\b/i,
+      /\banti[-\s]?reflect/i,
+      /\bar\b/i,
+    ])
+  ) {
+    return "Coating";
+  }
+
+  if (
+    containsAny(text, [
+      /\bframe\b/i,
+      /\bframes\b/i,
+      /glasses\s*frame/i,
+      /spectacle\s*frame/i,
+      /glasses\s*style/i,
+    ])
+  ) {
+    return "Frame";
+  }
+
+  if (
+    containsAny(text, [
+      /\blens\b/i,
+      /\blenses\b/i,
+      /prescription\s*lens/i,
+      /\bindex\b/i,
+      /\bmyopia\b/i,
+      /\bhyperopia\b/i,
+    ])
+  ) {
+    return "Lens";
+  }
+
   return "Other";
 }
 
@@ -414,6 +467,65 @@ function buildThicknessText(indexLensValue: any, fallbackText: any) {
   return idx ? `${idx} index lens` : "index lens";
 }
 
+function hasValue(v: any) {
+  return String(v ?? "").trim() !== "";
+}
+
+function selectLensRow(rows: Array<Record<string, any>>) {
+  for (const r of rows) {
+    if (hasValue(r["Index Lens"])) return r;
+  }
+  for (const r of rows) {
+    const item = String(r[LINE_ITEM] ?? "");
+    if (/\b(lens|lenses|prescription lens|index)\b/i.test(item)) return r;
+  }
+  for (const r of rows) {
+    if (categorize(r[LINE_ITEM], r) === "Lens") return r;
+  }
+  return rows[0] || null;
+}
+
+function pickFromRows(rows: Array<Record<string, any>>, keys: string[], preferredRow?: Record<string, any> | null) {
+  if (preferredRow) {
+    const v = pick(preferredRow, keys);
+    if (hasValue(v)) return v;
+  }
+  for (const r of rows) {
+    const v = pick(r, keys);
+    if (hasValue(v)) return v;
+  }
+  return "";
+}
+
+function getPDFromRows(rows: Array<Record<string, any>>, lensRow?: Record<string, any> | null): [string, string] {
+  const pd_od = fmtTwoDec(pickFromRows(rows, RX_KEYS.pd_od, lensRow));
+  const pd_os = fmtTwoDec(pickFromRows(rows, RX_KEYS.pd_os, lensRow));
+  if (pd_od || pd_os) return [pd_od, pd_os];
+
+  const single = pickFromRows(rows, ["Single PD", "Single_PD", "PD", "Pupillary Distance"], lensRow);
+  const n = Number(single);
+  if (Number.isFinite(n) && n > 0) {
+    const half = n / 2;
+    return [half.toFixed(2), half.toFixed(2)];
+  }
+  return ["", ""];
+}
+
+function collectCoatingText(bundle: any) {
+  const coatingItems = uniqPreserveOrder(bundle.items?.Coating || []);
+  const fromRows = uniqPreserveOrder(
+    (bundle.rows || []).flatMap((r: Record<string, any>) => {
+      const out: string[] = [];
+      const coatingField = normalizeText(r["Coating"]);
+      if (coatingField) out.push(coatingField);
+      const lineItem = normalizeText(r[LINE_ITEM]);
+      if (lineItem && /coating|blue|anti[- ]?uv|anti[- ]?reflect|ar\b/i.test(lineItem)) out.push(lineItem);
+      return out;
+    })
+  );
+  return uniqPreserveOrder([...coatingItems, ...fromRows]).join("; ");
+}
+
 const RX_KEYS = {
   od_sph: ["OD SPH", "OD_SPH", "Sphere OD", "OD Sphere"],
   od_cyl: ["OD CYL", "OD_CYL", "Cylinder OD", "OD Cylinder"],
@@ -671,7 +783,7 @@ async function handleAggregate(request: Request) {
     const item = r[LINE_ITEM];
     const qty = Number(r[QTY]) || 1;
     const display = qty !== 1 ? `${item} x${qty}` : String(item);
-    b.items[categorize(item)].push(display);
+    b.items[categorize(item, r)].push(display);
 
     for (const c of rxColumns) {
       if (!b.rx[c] && String(r[c] ?? "").trim() !== "") b.rx[c] = r[c];
@@ -814,6 +926,7 @@ async function handleLabels(request: Request, env: any) {
         ...RX_KEYS.pres_type,
         "Index Lens",
         "Lens Group",
+        "Coating",
         "Single PD",
         "PD",
       ];
@@ -833,14 +946,15 @@ async function handleLabels(request: Request, env: any) {
         }
 
         if (!o.bundles.has(bundleId)) {
-          o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {} });
+          o.bundles.set(bundleId, { bundleId, items: { Frame: [], Lens: [], Coating: [], Other: [] }, rx: {}, rows: [] });
         }
         const b = o.bundles.get(bundleId);
+        b.rows.push(r);
 
         const item = r[LINE_ITEM];
         const qty = Number(r[QTY]) || 1;
         const display = qty !== 1 ? `${item} x${qty}` : String(item);
-        b.items[categorize(item)].push(display);
+        b.items[categorize(item, r)].push(display);
         scanTextForFonts(item, needs);
 
         for (const k of keysToKeep) {
@@ -994,28 +1108,30 @@ async function handleLabels(request: Request, env: any) {
           }
           if (generated >= limit) break outer;
 
+          const bundleRows = b.rows || [];
+          const lensRow = selectLensRow(bundleRows);
           const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
-          const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
-          const indexLensText = pick(b.rx, ["Index Lens"]);
+          const coatingText = collectCoatingText(b);
+          const indexLensText = pickFromRows(bundleRows, ["Index Lens"], lensRow);
           const thickness = buildThicknessText(indexLensText, lensText);
-          const lensGroup = normalizeText(pick(b.rx, ["Lens Group"])) || "-";
+          const lensGroup = normalizeText(pickFromRows(bundleRows, ["Lens Group"], lensRow)) || "-";
 
           let coating = "Blue Light Blocking";
           if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
 
-          const presType = String(pick(b.rx, RX_KEYS.pres_type)) || "Single Vision";
+          const presType = String(pickFromRows(bundleRows, RX_KEYS.pres_type, lensRow)) || "Single Vision";
 
-          const od_sph  = fmtTwoDec(pick(b.rx, RX_KEYS.od_sph));
-          const od_cyl  = fmtTwoDec(pick(b.rx, RX_KEYS.od_cyl));
-          const od_axis = fmtAxis(pick(b.rx, RX_KEYS.od_axis));
-          const od_add  = fmtTwoDec(pick(b.rx, RX_KEYS.od_add));
+          const od_sph  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.od_sph, lensRow));
+          const od_cyl  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.od_cyl, lensRow));
+          const od_axis = fmtAxis(pickFromRows(bundleRows, RX_KEYS.od_axis, lensRow));
+          const od_add  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.od_add, lensRow));
 
-          const os_sph  = fmtTwoDec(pick(b.rx, RX_KEYS.os_sph));
-          const os_cyl  = fmtTwoDec(pick(b.rx, RX_KEYS.os_cyl));
-          const os_axis = fmtAxis(pick(b.rx, RX_KEYS.os_axis));
-          const os_add  = fmtTwoDec(pick(b.rx, RX_KEYS.os_add));
+          const os_sph  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.os_sph, lensRow));
+          const os_cyl  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.os_cyl, lensRow));
+          const os_axis = fmtAxis(pickFromRows(bundleRows, RX_KEYS.os_axis, lensRow));
+          const os_add  = fmtTwoDec(pickFromRows(bundleRows, RX_KEYS.os_add, lensRow));
 
-          const [pd_od, pd_os] = getPD(b.rx);
+          const [pd_od, pd_os] = getPDFromRows(bundleRows, lensRow);
 
           const page = pdf.addPage([PAGE_W, PAGE_H]);
           drawLabel(page, fonts, {
