@@ -90,11 +90,15 @@ function categorize(item: any) {
   return "Other";
 }
 
-function parseIndexLensFromText(val: any): string {
-  const s = String(val ?? "");
-  const m = s.match(/1\.\d{1,2}|\d\.\d{1,2}/);
+function parseIndexLens(value: any): string {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
+
+  // Prefer refractive-index-like values (1.x / 1.xx) with numeric boundaries.
+  const m = s.match(/(?:^|[^0-9])1\.(\d{1,2})(?!\d)/i);
   if (!m) return "";
-  const n = Number(m[0]);
+
+  const n = Number(`1.${m[1]}`);
   if (!Number.isFinite(n)) return "";
   return n.toFixed(2);
 }
@@ -363,6 +367,53 @@ function buildCoatingLines(fonts: any, raw: string, size: number, maxWidth: numb
   return lines.map((line) => fitLine(fonts, line, size, maxWidth));
 }
 
+function buildWrappedLines(fonts: any, raw: string, size: number, maxWidth: number, maxLines = 2) {
+  const text = normalizeText(raw);
+  if (!text) return [{ text: "-", size }];
+  if (measureTextRuns(fonts, text, size) <= maxWidth) return [{ text, size }];
+
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) return [{ text: "-", size }];
+
+  const lines: string[] = [];
+  let current = "";
+  let overflow = false;
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const candidate = current ? `${current} ${w}` : w;
+    if (!current || measureTextRuns(fonts, candidate, size) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    current = w;
+    if (lines.length >= maxLines - 1) {
+      if (i + 1 < words.length) {
+        current = `${current} ${words.slice(i + 1).join(" ")}`;
+        overflow = true;
+      }
+      break;
+    }
+  }
+  if (current) lines.push(current);
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    overflow = true;
+  }
+  if (overflow && lines.length) {
+    lines[lines.length - 1] = `${lines[lines.length - 1]}...`;
+  }
+  return lines.map((line) => fitLine(fonts, line, size, maxWidth));
+}
+
+function buildThicknessText(indexLensValue: any, fallbackText: any) {
+  const indexLensRaw = normalizeText(indexLensValue);
+  if (indexLensRaw) return indexLensRaw;
+  const idx = parseIndexLens(fallbackText);
+  return idx ? `${idx} index lens` : "index lens";
+}
+
 const RX_KEYS = {
   od_sph: ["OD SPH", "OD_SPH", "Sphere OD", "OD Sphere"],
   od_cyl: ["OD CYL", "OD_CYL", "Cylinder OD", "OD Cylinder"],
@@ -460,6 +511,7 @@ function drawLabel(page: any, fonts: any, data: {
   name: string;
   presType: string;
   thickness: string;
+  lensGroup: string;
   coating: string;
   od: { sph: string; cyl: string; axis: string; add: string; pd: string };
   os: { sph: string; cyl: string; axis: string; add: string; pd: string };
@@ -504,36 +556,48 @@ function drawLabel(page: any, fonts: any, data: {
   const rightValueX = x(0.45);
   const rightMaxWidth = x(0.97) - rightValueX;
 
-  drawTopLeft(x(0.03), top(0.66), "Prescription:", bodySize);
-  drawTopLeft(rightValueX, top(0.66), data.presType || "-", bodySize);
+  drawTopLeft(x(0.03), top(0.68), "Prescription:", bodySize);
+  drawTopLeft(rightValueX, top(0.68), data.presType || "-", bodySize);
 
-  drawTopLeft(x(0.03), top(0.58), "Thickness:", bodySize);
-  drawTopLeft(rightValueX, top(0.58), data.thickness || "index lens", bodySize);
+  drawTopLeft(x(0.03), top(0.60), "Thickness:", bodySize);
+  const thicknessLines = buildWrappedLines(fonts, data.thickness || "index lens", bodySize, rightMaxWidth, 2);
+  const thicknessTop = top(0.60);
+  const thicknessGap = bodySize + 1;
+  thicknessLines.forEach((line, i) => {
+    drawTopLeft(rightValueX, thicknessTop + i * thicknessGap, line.text, line.size);
+  });
 
-  drawTopLeft(x(0.03), top(0.50), "Coating:", bodySize);
-  const coatingLines = buildCoatingLines(fonts, data.coating || "-", bodySize, rightMaxWidth, 2);
-  const coatingTop = top(0.50);
+  drawTopLeft(x(0.03), top(0.50), "Lens Group:", bodySize);
+  const lensGroupLines = buildWrappedLines(fonts, data.lensGroup || "-", bodySize, rightMaxWidth, 2);
+  const lensGroupTop = top(0.50);
   const coatingGap = bodySize + 1;
+  lensGroupLines.forEach((line, i) => {
+    drawTopLeft(rightValueX, lensGroupTop + i * coatingGap, line.text, line.size);
+  });
+
+  drawTopLeft(x(0.03), top(0.40), "Coating:", bodySize);
+  const coatingLines = buildCoatingLines(fonts, data.coating || "-", bodySize, rightMaxWidth, 2);
+  const coatingTop = top(0.40);
   coatingLines.forEach((line, i) => {
     drawTopLeft(rightValueX, coatingTop + i * coatingGap, line.text, line.size);
   });
 
-  hlineTop(top(0.40), 0.8);
+  hlineTop(top(0.30), 0.8);
 
   // 表格区域
   const colX = [0.16, 0.32, 0.48, 0.64, 0.8].map(x);
-  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTopCenter(colX[i], top(0.35), h, bodySize));
-  drawTopCenter(x(0.06), top(0.27), "od", bodySize);
-  drawTopCenter(x(0.06), top(0.19), "os", bodySize);
+  ["sph", "cyl", "axis", "add", "pd"].forEach((h, i) => drawTopCenter(colX[i], top(0.26), h, bodySize));
+  drawTopCenter(x(0.06), top(0.20), "od", bodySize);
+  drawTopCenter(x(0.06), top(0.14), "os", bodySize);
 
   const vOD = [data.od.sph, data.od.cyl, data.od.axis, data.od.add, data.od.pd].map((v) => v || "-");
   const vOS = [data.os.sph, data.os.cyl, data.os.axis, data.os.add, data.os.pd].map((v) => v || "-");
 
-  vOD.forEach((v, i) => drawTopCenter(colX[i], top(0.27), v, bodySize));
-  vOS.forEach((v, i) => drawTopCenter(colX[i], top(0.19), v, bodySize));
+  vOD.forEach((v, i) => drawTopCenter(colX[i], top(0.20), v, bodySize));
+  vOS.forEach((v, i) => drawTopCenter(colX[i], top(0.14), v, bodySize));
 
-  hlineTop(top(0.13), 0.8);
-  drawTopLeft(x(0.03), top(0.08), data.dateStr || "", bodySize);
+  hlineTop(top(0.09), 0.8);
+  drawTopLeft(x(0.03), top(0.05), data.dateStr || "", bodySize);
 }
 
 /** =========================
@@ -748,6 +812,8 @@ async function handleLabels(request: Request, env: any) {
         ...RX_KEYS.pd_od,
         ...RX_KEYS.pd_os,
         ...RX_KEYS.pres_type,
+        "Index Lens",
+        "Lens Group",
         "Single PD",
         "PD",
       ];
@@ -801,8 +867,12 @@ async function handleLabels(request: Request, env: any) {
 
           const lensText = String(pickFromBundle(r, ["Lens Items"], i) ?? "");
           const coatingText = String(pickFromBundle(r, ["Coating Items"], i) ?? "");
+          const indexLensText = String(pickFromBundle(r, ["Index Lens"], i) ?? "");
+          const lensGroup = String(pickFromBundle(r, ["Lens Group"], i) ?? "");
           scanTextForFonts(lensText, needs);
           scanTextForFonts(coatingText, needs);
+          scanTextForFonts(indexLensText, needs);
+          scanTextForFonts(lensGroup, needs);
 
           const presType = String(pickFromBundle(r, RX_KEYS.pres_type, i) ?? "");
           scanTextForFonts(presType, needs);
@@ -926,9 +996,9 @@ async function handleLabels(request: Request, env: any) {
 
           const lensText = uniqPreserveOrder(b.items.Lens).join("; ");
           const coatingText = uniqPreserveOrder(b.items.Coating).join("; ");
-
-          const idxLens = parseIndexLensFromText(lensText);
-          const thickness = idxLens ? `${idxLens} index lens` : "index lens";
+          const indexLensText = pick(b.rx, ["Index Lens"]);
+          const thickness = buildThicknessText(indexLensText, lensText);
+          const lensGroup = normalizeText(pick(b.rx, ["Lens Group"])) || "-";
 
           let coating = "Blue Light Blocking";
           if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
@@ -953,6 +1023,7 @@ async function handleLabels(request: Request, env: any) {
             name: o.name || "-",
             presType,
             thickness,
+            lensGroup,
             coating,
             od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
             os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
@@ -980,9 +1051,9 @@ async function handleLabels(request: Request, env: any) {
 
           const lensText = String(pickFromBundle(r, ["Lens Items"], i) ?? "");
           const coatingText = String(pickFromBundle(r, ["Coating Items"], i) ?? "");
-
-          const idxLens = parseIndexLensFromText(lensText);
-          const thickness = idxLens ? `${idxLens} index lens` : "index lens";
+          const indexLensText = pickFromBundle(r, ["Index Lens"], i);
+          const thickness = buildThicknessText(indexLensText, lensText);
+          const lensGroup = normalizeText(pickFromBundle(r, ["Lens Group"], i)) || "-";
 
           let coating = "Blue Light Blocking";
           if (coatingText) coating = coatingText.toLowerCase().includes("blue") ? "Blue Light Blocking" : coatingText;
@@ -1009,6 +1080,7 @@ async function handleLabels(request: Request, env: any) {
             name: name || "-",
             presType,
             thickness,
+            lensGroup,
             coating,
             od: { sph: od_sph, cyl: od_cyl, axis: od_axis, add: od_add, pd: pd_od },
             os: { sph: os_sph, cyl: os_cyl, axis: os_axis, add: os_add, pd: pd_os },
